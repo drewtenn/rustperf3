@@ -1,13 +1,18 @@
 use num_enum::TryFromPrimitive;
 
+use self::cookie::COOKIE_LEN;
 use self::protocol::Protocol;
 
+pub mod cookie;
+pub mod cpu;
+pub mod interval;
 pub mod protocol;
 pub mod test;
 pub mod timer;
 pub mod stream;
+pub mod wire;
 
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, TryFromPrimitive)]
 #[repr(i8)]
 pub enum Message {
     TestStart = 1,
@@ -30,18 +35,71 @@ pub enum Message {
     ServerError = -2,
 }
 
-pub fn connect(host: String) -> Option<Protocol> {
+/// Open a TCP connection to `host` and immediately send the session's
+/// cookie. iPerf3 multiplexes control and data streams over the same
+/// server port using the cookie as the session key — so every stream
+/// in one session must send the *same* cookie.
+pub fn connect(host: String, cookie: &[u8; COOKIE_LEN]) -> Option<Protocol> {
     match Protocol::new_tcp(host) {
-        Some(mut protocol) => {
-            send_cookie(&mut protocol);
-
-            Some(protocol)
-        }
+        Some(mut protocol) => match send_cookie(&mut protocol, cookie) {
+            Ok(()) => Some(protocol),
+            Err(e) => {
+                eprintln!("failed to send cookie: {:?}", e);
+                None
+            }
+        },
         None => None,
     }
 }
 
-fn send_cookie(protocol: &mut Protocol) {
-    let cookie = "Aj6ard5dsxid53kuwtvayyfi5mfe2g6jpxmq\0";
-    protocol.transfer.send(cookie.as_bytes());
+fn send_cookie(protocol: &mut Protocol, cookie: &[u8; COOKIE_LEN]) -> std::io::Result<()> {
+    protocol.transfer.send(cookie)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_roundtrip_try_from_primitive() {
+        let variants = [
+            Message::TestStart,
+            Message::TestRunning,
+            Message::ResultRequest,
+            Message::TestEnd,
+            Message::StreamBegin,
+            Message::StreamRunning,
+            Message::StreamEnd,
+            Message::AllStreamsEnd,
+            Message::ParamExchange,
+            Message::CreateStreams,
+            Message::ServerTerminate,
+            Message::ClientTerminate,
+            Message::ExchangeResults,
+            Message::DisplayResults,
+            Message::IperfStart,
+            Message::IperfDone,
+            Message::AccessDenied,
+            Message::ServerError,
+        ];
+
+        for variant in variants {
+            let code = variant as i8;
+            let roundtripped = Message::try_from(code)
+                .unwrap_or_else(|_| panic!("code {} failed to round-trip", code));
+            assert_eq!(
+                roundtripped as i8, code,
+                "variant value {} did not round-trip",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn message_try_from_unknown_code_is_err() {
+        assert!(Message::try_from(0i8).is_err());
+        assert!(Message::try_from(127i8).is_err());
+        assert!(Message::try_from(-128i8).is_err());
+    }
 }
