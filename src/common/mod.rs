@@ -3,6 +3,7 @@ use num_enum::TryFromPrimitive;
 use self::cookie::COOKIE_LEN;
 use self::protocol::Protocol;
 
+pub mod bandwidth;
 pub mod cookie;
 pub mod cpu;
 pub mod interval;
