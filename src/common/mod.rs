@@ -10,6 +10,7 @@ pub mod protocol;
 pub mod test;
 pub mod timer;
 pub mod stream;
+pub mod udp_header;
 pub mod wire;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, TryFromPrimitive)]
