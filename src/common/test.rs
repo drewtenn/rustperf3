@@ -7,6 +7,7 @@ use super::protocol::Protocol;
 use super::stream::Stream;
 use super::wire::DEFAULT_TCP_LEN;
 use super::Message;
+use crate::common::TransportKind;
 
 /// Per-stream bookkeeping the client's stream thread sends back to the
 /// main loop on exit. Carries real bytes-sent, bytes-omitted, and
@@ -78,6 +79,11 @@ pub struct Config {
 	/// Seconds at the start of each stream whose bytes are excluded
 	/// from the reported measurement window (skips TCP slow-start).
 	pub omit: u32,
+	pub transport: TransportKind,
+	/// Sender-side bandwidth limit in bits per second. 0 = unlimited.
+	/// Applies to UDP by default (matching iperf3) and to TCP when
+	/// explicitly set via `-b`.
+	pub bandwidth: u64,
 }
 
 impl Config {
@@ -91,6 +97,8 @@ impl Config {
 			parallel: 1,
 			len: DEFAULT_TCP_LEN as u32,
 			omit: 0,
+			transport: TransportKind::Tcp,
+			bandwidth: 0,
 		}
 	}
 
@@ -182,8 +190,17 @@ mod tests {
 			parallel: 1,
 			len: DEFAULT_TCP_LEN as u32,
 			omit: 0,
+			transport: TransportKind::Tcp,
+			bandwidth: 0,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
+	}
+
+	#[test]
+	fn config_with_host_defaults_tcp_and_unlimited_bandwidth() {
+		let cfg = Config::with_host("h");
+		assert_eq!(cfg.transport, crate::common::TransportKind::Tcp);
+		assert_eq!(cfg.bandwidth, 0);
 	}
 
 	#[test]

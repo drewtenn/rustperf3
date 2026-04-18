@@ -9,6 +9,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::common::test::Config;
 use crate::common::wire::DEFAULT_TCP_LEN;
+use crate::common::TransportKind;
 
 /// Default iPerf3 control port.
 pub const DEFAULT_PORT: u16 = 5201;
@@ -77,6 +78,8 @@ impl Cli {
             parallel: self.parallel,
             len: self.len,
             omit: self.omit,
+            transport: TransportKind::Tcp,
+            bandwidth: 0,
         };
         if self.server {
             Mode::Server(base)

@@ -31,6 +31,8 @@ fn self_test_loopback_tcp_short_run() {
         parallel: 1,
         len: 131_072,
         omit: 0,
+        transport: rperf::TransportKind::Tcp,
+        bandwidth: 0,
     };
 
     // Tiny delay so the server thread reaches listener.accept() before
@@ -69,6 +71,8 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         parallel: 1,
         len: 131_072,
         omit: 1,
+        transport: rperf::TransportKind::Tcp,
+        bandwidth: 0,
     };
 
     thread::sleep(Duration::from_millis(50));
