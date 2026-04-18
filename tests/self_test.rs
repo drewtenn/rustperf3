@@ -126,3 +126,33 @@ fn server_times_out_when_client_goes_silent_after_cookie() {
         elapsed
     );
 }
+
+#[test]
+fn self_test_loopback_udp_short_run() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = listener.local_addr().expect("local_addr").port();
+
+    let server = thread::spawn(move || rperf::run_server_on(listener));
+
+    let client_cfg = rperf::Config {
+        host: "127.0.0.1".to_string(),
+        port,
+        time: 1,
+        parallel: 1,
+        len: 1400,
+        omit: 0,
+        transport: rperf::TransportKind::Udp,
+        bandwidth: 10_000_000,
+    };
+
+    thread::sleep(Duration::from_millis(50));
+    rperf::run_client(client_cfg);
+
+    let total_bytes = server
+        .join()
+        .expect("server thread panicked")
+        .expect("server returned error");
+
+    // 10 Mbps for 1s ≈ 1.25 MB. Very conservative threshold.
+    assert!(total_bytes > 100_000, "server saw {} bytes", total_bytes);
+}
