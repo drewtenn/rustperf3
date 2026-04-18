@@ -6,6 +6,7 @@ use self::protocol::Protocol;
 pub mod cookie;
 pub mod cpu;
 pub mod interval;
+pub mod jitter;
 pub mod pacing;
 pub mod protocol;
 pub mod test;
