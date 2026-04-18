@@ -39,10 +39,17 @@ pub struct ClientOptions {
     pub parallel: u32,
     pub len: u32,
     pub client_version: String,
-    #[serde(default)]
+    // Skip these on the wire when they're at their defaults. iperf3 3.21
+    // alters its state machine when it sees unexpected fields, so TCP
+    // mode must look like the legacy payload did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub udp: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub bandwidth: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 impl ClientOptions {
