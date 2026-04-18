@@ -214,9 +214,9 @@ pub fn build_client_results(
             id: r.stream_id,
             bytes: r.bytes_sent,
             retransmits: r.retransmits as i64,
-            jitter: 0.0,
-            errors: 0,
-            packets: 0,
+            jitter: r.jitter_ms,
+            errors: r.lost,
+            packets: r.packets,
         })
         .collect();
 
@@ -262,7 +262,11 @@ fn create_streams(test: &Test) {
     let host = test.config.host_port();
     let n = test.config.parallel.max(1);
     for stream_id in 1..=n {
-        Stream::start(test, host.clone(), test.cookie, stream_id);
+        if test.config.transport.is_udp() {
+            Stream::start_udp(test, host.clone(), test.cookie, stream_id);
+        } else {
+            Stream::start(test, host.clone(), test.cookie, stream_id);
+        }
     }
 }
 
@@ -284,6 +288,11 @@ fn send_options(test: &mut Test) {
     let mut options =
         ClientOptions::tcp_defaults(test.config.time, test.config.parallel, test.config.len);
     options.omit = test.config.omit;
+    options.udp = test.config.transport.is_udp();
+    options.bandwidth = test.config.bandwidth;
+    if options.udp {
+        options.tcp = false;
+    }
     match send_framed_json(protocol.transfer.as_mut(), &options) {
         Ok(()) => println!("Options sent."),
         Err(e) => eprintln!("failed to send options: {:?}", e),
@@ -392,5 +401,18 @@ mod tests {
             client_measured_duration(&[r]),
             Duration::from_millis(600)
         );
+    }
+
+    #[test]
+    fn build_client_results_populates_udp_fields() {
+        let mut r = ClientStreamReceipt::empty(1);
+        r.bytes_sent = 2048;
+        r.jitter_ms = 0.75;
+        r.lost = 3;
+        r.packets = 40;
+        let out = build_client_results(&[r], &CpuUsage::ZERO);
+        assert_eq!(out.streams[0].jitter, 0.75);
+        assert_eq!(out.streams[0].errors, 3);
+        assert_eq!(out.streams[0].packets, 40);
     }
 }
