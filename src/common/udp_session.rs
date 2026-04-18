@@ -96,12 +96,31 @@ pub fn run_udp_receiver(
         .collect();
     let mut buf = [0u8; 65_536];
 
+    // Wall-clock deadline set the first time stop_flag is observed.  Once
+    // the deadline passes we break unconditionally, even if packets keep
+    // arriving and the sentinel was never received (e.g. dropped on an
+    // unreliable link).
+    let mut grace_deadline: Option<Instant> = None;
+    // Guard to avoid repeated set_read_timeout syscalls on every iteration.
+    let mut short_timeout_set = false;
+
     loop {
-        if stop_flag.load(Ordering::Relaxed) && states.values().all(|s| s.saw_sentinel) {
-            break;
-        }
         if stop_flag.load(Ordering::Relaxed) {
-            let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+            let deadline = *grace_deadline.get_or_insert_with(|| {
+                Instant::now() + Duration::from_millis(500)
+            });
+
+            // Reduce the read timeout once (at the stop transition) so that
+            // a steady stream of non-sentinel packets wakes up quickly enough
+            // to check the wall-clock deadline.
+            if !short_timeout_set {
+                let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+                short_timeout_set = true;
+            }
+
+            if states.values().all(|s| s.saw_sentinel) || Instant::now() >= deadline {
+                break;
+            }
         }
 
         match socket.recv_from(&mut buf) {
@@ -246,6 +265,67 @@ mod tests {
 
         let (n, buf) = client.join().unwrap();
         assert_eq!(&buf[..n], UDP_STREAM_ACK, "server should reply with 6789 for iperf3 init");
+    }
+
+    /// Verify that `run_udp_receiver` terminates within the grace deadline
+    /// even when the sender never sends a sentinel (simulating a dropped
+    /// sentinel on an unreliable UDP link).  The test sets `stop_flag`
+    /// before calling the receiver, sends 5 data packets, and asserts the
+    /// call returns within 600 ms.
+    #[test]
+    fn run_udp_receiver_returns_within_grace_deadline_without_sentinel() {
+        let server = bind_udp("127.0.0.1:0", Some(Duration::from_secs(3))).expect("bind");
+        let cookie = generate_cookie();
+        let server_addr = server.local_addr().unwrap();
+
+        // Collect the sender address so we can register it as a stream.
+        // We need the client socket to be bound before accept_udp_streams,
+        // so we send the init datagram first.
+        let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("client bind");
+        client_sock.connect(server_addr).expect("client connect");
+        let client_addr = client_sock.local_addr().unwrap();
+
+        // Register the client address manually (bypassing accept_udp_streams)
+        // by calling it in a thread so the handshake completes.
+        let cookie2 = cookie;
+        let sender = thread::spawn(move || {
+            // Send the init datagram so accept_udp_streams is satisfied.
+            client_sock.send(&cookie2).expect("send init");
+
+            // Discard the ack (or ignore timeout).
+            let mut ack_buf = [0u8; 16];
+            let _ = client_sock.recv(&mut ack_buf);
+
+            // Send 5 data packets with no sentinel.
+            for seq in 0i64..5 {
+                let mut buf = [0u8; 64];
+                UdpHeader { tv_sec: 0, tv_usec: 0, seq }
+                    .encode(&mut buf[..UDP_HEADER_LEN])
+                    .unwrap();
+                client_sock.send(&buf).expect("send data");
+                thread::sleep(Duration::from_millis(5));
+            }
+            // No sentinel sent — the receiver must time out on the grace deadline.
+            client_addr
+        });
+
+        let stream_addrs = accept_udp_streams(&server, &cookie, 1).expect("accept");
+        assert_eq!(stream_addrs.len(), 1);
+
+        // stop_flag already set: the receiver must honour the grace deadline.
+        let stop = Arc::new(AtomicBool::new(true));
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let receipts = run_udp_receiver(server, stream_addrs, Duration::ZERO, stop);
+
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "run_udp_receiver did not return within 600 ms grace deadline"
+        );
+        assert_eq!(receipts.len(), 1, "one stream registered");
+        // We may have received some or all 5 packets before breaking.
+        assert!(receipts[0].packets <= 5);
+
+        let _ = sender.join();
     }
 
     #[test]
