@@ -9,9 +9,12 @@
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::common::cookie::{recv_cookie, COOKIE_LEN};
+use crate::common::udp_session::{accept_udp_streams, bind_udp, run_udp_receiver};
 use crate::common::cpu::{self, CpuUsage};
 use crate::common::interval::IntervalReporter;
 use crate::common::protocol::{Protocol, Tcp};
@@ -132,52 +135,24 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
     let opts = negotiate_options(&mut control)?;
     println!("negotiated options: {:?}", opts);
 
-    let streams = accept_streams(&mut control, listener, &cookie, opts.parallel, handshake_timeout)?;
-    println!("accepted {} data stream(s)", streams.len());
+    let receipts = if opts.udp {
+        run_udp_branch(&mut control, listener, &cookie, &opts, handshake_timeout)?
+    } else {
+        run_tcp_branch(&mut control, listener, &cookie, &opts, handshake_timeout)?
+    };
 
-    send_test_start_running(&mut control)?;
-    println!("test is running");
-
-    // Give the control channel enough headroom to outlast the full
-    // omit + test window; otherwise a long test would trigger a false
-    // timeout on wait_for_test_end.
-    let run_timeout = handshake_timeout
-        .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
-    control.transfer.set_read_timeout(run_timeout)?;
-
-    let omit_window = Duration::from_secs(opts.omit as u64);
-    let handles = spawn_stream_readers(streams, omit_window);
-
-    // Block on the control channel until the client tells us the test
-    // is over. The stream reader threads should have already seen EOF
-    // by now (the client closes its data sockets when the timer fires)
-    // but joining *after* TestEnd guarantees we do not race.
-    wait_for_test_end(&mut control)?;
-
-    let receipts = join_stream_totals(handles);
     let total_bytes: u64 = receipts.iter().map(|r| r.bytes).sum();
     let measured_bytes: u64 = receipts.iter().map(|r| r.bytes_measured()).sum();
     let raw = measured_duration(&receipts);
     let steady = measured_steady_state(&receipts);
     println!(
         "total bytes received: {} ({} post-omit) across {} stream(s) over {:.6}s (steady-state {:.6}s)",
-        total_bytes,
-        measured_bytes,
-        receipts.len(),
-        raw.as_secs_f64(),
-        steady.as_secs_f64(),
+        total_bytes, measured_bytes, receipts.len(),
+        raw.as_secs_f64(), steady.as_secs_f64(),
     );
 
-    // Drop back to the handshake timeout for the post-test exchange.
     control.transfer.set_read_timeout(handshake_timeout)?;
-
-    let wall = if !steady.is_zero() {
-        steady
-    } else if !raw.is_zero() {
-        raw
-    } else {
-        Duration::ZERO
-    };
+    let wall = if !steady.is_zero() { steady } else if !raw.is_zero() { raw } else { Duration::ZERO };
     let cpu_end = cpu::sample();
     let cpu_usage = cpu::usage(&cpu_start, &cpu_end, wall);
     if cpu_usage.total_pct > 0.0 {
@@ -189,12 +164,8 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
 
     exchange_results(&mut control, &receipts, &cpu_usage)?;
     println!("results exchanged");
-
     finalize_test(&mut control)?;
 
-    // Prefer the steady-state window for the summary when omit was
-    // requested; otherwise fall back to raw measured, then to
-    // opts.time as a last resort.
     let (summary_bytes, summary_duration) = if opts.omit > 0 && !steady.is_zero() {
         (measured_bytes, steady)
     } else if !raw.is_zero() {
@@ -203,8 +174,66 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
         (total_bytes, Duration::from_secs(opts.time as u64))
     };
     print_summary(&format_summary(summary_bytes, summary_duration, receipts.len()));
-
     Ok(total_bytes)
+}
+
+fn run_tcp_branch(
+    control: &mut Protocol,
+    listener: &TcpListener,
+    cookie: &[u8; COOKIE_LEN],
+    opts: &ClientOptions,
+    handshake_timeout: Option<Duration>,
+) -> io::Result<Vec<StreamReceipt>> {
+    let streams = accept_streams(control, listener, cookie, opts.parallel, handshake_timeout)?;
+    println!("accepted {} data stream(s)", streams.len());
+    send_test_start_running(control)?;
+    println!("test is running");
+
+    let run_timeout = handshake_timeout
+        .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
+    control.transfer.set_read_timeout(run_timeout)?;
+
+    let omit_window = Duration::from_secs(opts.omit as u64);
+    let handles = spawn_stream_readers(streams, omit_window);
+    wait_for_test_end(control)?;
+    Ok(join_stream_totals(handles))
+}
+
+fn run_udp_branch(
+    control: &mut Protocol,
+    listener: &TcpListener,
+    cookie: &[u8; COOKIE_LEN],
+    opts: &ClientOptions,
+    handshake_timeout: Option<Duration>,
+) -> io::Result<Vec<StreamReceipt>> {
+    let local = listener.local_addr()?;
+    let bind_str = format!("{}:{}", local.ip(), local.port());
+    let udp = bind_udp(&bind_str, handshake_timeout)?;
+
+    send_control_byte(control.transfer.as_mut(), Message::CreateStreams)?;
+    let addrs = accept_udp_streams(&udp, cookie, opts.parallel)?;
+    println!("accepted {} udp stream(s)", addrs.len());
+
+    udp.set_read_timeout(None)?;
+
+    send_test_start_running(control)?;
+
+    let run_timeout = handshake_timeout
+        .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
+    control.transfer.set_read_timeout(run_timeout)?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let receiver_stop = stop.clone();
+    let omit_window = Duration::from_secs(opts.omit as u64);
+    let handle = std::thread::spawn(move || {
+        run_udp_receiver(udp, addrs, omit_window, receiver_stop)
+    });
+
+    wait_for_test_end(control)?;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let receipts = handle.join().unwrap_or_default();
+    Ok(receipts)
 }
 
 /// Send DisplayResults and block until the client sends IperfDone. This
@@ -301,8 +330,8 @@ pub fn exchange_results(
 }
 
 /// Build the Results payload the server reports back. Per-stream bytes
-/// come from the reader threads; the UDP/jitter fields stay zero since
-/// we only ship a TCP path.
+/// come from the reader threads; UDP fields (jitter, lost, packets) are
+/// populated from the receipt when available.
 pub fn build_server_results(receipts: &[StreamReceipt], cpu: &CpuUsage) -> Results {
     let streams = receipts
         .iter()
@@ -311,9 +340,9 @@ pub fn build_server_results(receipts: &[StreamReceipt], cpu: &CpuUsage) -> Resul
             id: (i + 1) as u32,
             bytes: r.bytes,
             retransmits: 0,
-            jitter: 0.0,
-            errors: 0,
-            packets: 0,
+            jitter: r.jitter_ms,
+            errors: r.lost,
+            packets: r.packets,
         })
         .collect();
 
@@ -938,6 +967,25 @@ mod tests {
     fn format_summary_handles_zero_duration_without_panic() {
         // Just make sure we don't divide by zero.
         let _ = format_summary(1_000, std::time::Duration::from_secs(0), 1);
+    }
+
+    #[test]
+    fn build_server_results_populates_udp_fields_from_receipts() {
+        let r = StreamReceipt {
+            bytes: 1000,
+            bytes_omit: 0,
+            first_byte_at: None,
+            first_measured_at: None,
+            last_byte_at: None,
+            jitter_ms: 2.5,
+            lost: 7,
+            ooo: 1,
+            packets: 50,
+        };
+        let results = build_server_results(&[r], &CpuUsage::ZERO);
+        assert_eq!(results.streams[0].jitter, 2.5);
+        assert_eq!(results.streams[0].errors, 7);
+        assert_eq!(results.streams[0].packets, 50);
     }
 
     #[test]
