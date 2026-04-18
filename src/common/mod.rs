@@ -17,6 +17,7 @@ pub mod timer;
 pub mod stream;
 pub mod transport_kind;
 pub mod udp_header;
+pub mod udp_session;
 pub mod wire;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, TryFromPrimitive)]
