@@ -317,6 +317,10 @@ mod tests {
             first_measured_at: first,
             last_send_at: last,
             retransmits: 0,
+            jitter_ms: 0.0,
+            lost: 0,
+            ooo: 0,
+            packets: 0,
         }
     }
 

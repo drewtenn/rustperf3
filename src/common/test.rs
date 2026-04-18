@@ -13,7 +13,7 @@ use crate::common::TransportKind;
 /// main loop on exit. Carries real bytes-sent, bytes-omitted, and
 /// send-timestamp bounds so ExchangeResults can report actual measured
 /// throughput rather than zeros.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClientStreamReceipt {
 	pub stream_id: u32,
 	pub bytes_sent: u64,
@@ -28,6 +28,14 @@ pub struct ClientStreamReceipt {
 	/// TCP segment retransmissions observed on this stream (Linux
 	/// only; zero on unsupported platforms).
 	pub retransmits: u32,
+	/// RFC 3550 jitter estimate for UDP streams (milliseconds). Zero for TCP.
+	pub jitter_ms: f64,
+	/// UDP datagrams lost during this stream (server-side count). Zero for TCP.
+	pub lost: u64,
+	/// UDP datagrams received out-of-order. Zero for TCP.
+	pub ooo: u64,
+	/// Total UDP datagrams sent by this stream. Zero for TCP.
+	pub packets: u64,
 }
 
 impl ClientStreamReceipt {
@@ -40,6 +48,10 @@ impl ClientStreamReceipt {
 			first_measured_at: None,
 			last_send_at: None,
 			retransmits: 0,
+			jitter_ms: 0.0,
+			lost: 0,
+			ooo: 0,
+			packets: 0,
 		}
 	}
 
@@ -211,5 +223,14 @@ mod tests {
 		assert!(!t.is_started);
 		assert!(!t.is_running);
 		assert!(t.control_channel.is_none());
+	}
+
+	#[test]
+	fn client_receipt_empty_zeros_udp_fields() {
+		let r = ClientStreamReceipt::empty(1);
+		assert_eq!(r.jitter_ms, 0.0);
+		assert_eq!(r.lost, 0);
+		assert_eq!(r.ooo, 0);
+		assert_eq!(r.packets, 0);
 	}
 }
