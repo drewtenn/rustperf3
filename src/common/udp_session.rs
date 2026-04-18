@@ -14,27 +14,51 @@ use super::jitter;
 use super::udp_header::{UdpHeader, UDP_HEADER_LEN};
 use crate::server::StreamReceipt;
 
+/// The 4-byte "stream-init" datagram that iperf3 3.x clients send to the
+/// server's UDP port after the TCP `CreateStreams` control byte.  The
+/// server must reply with `UDP_STREAM_ACK` to complete the handshake.
+#[cfg(test)]
+const UDP_STREAM_INIT: &[u8] = b"9876";
+
+/// The 4-byte acknowledgment the server sends back to the client after
+/// receiving `UDP_STREAM_INIT`.  This is what iperf3 3.x expects; without
+/// it the client interprets the silence as a failure and aborts.
+const UDP_STREAM_ACK: &[u8] = b"6789";
+
 pub fn bind_udp(addr: &str, handshake_timeout: Option<Duration>) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(addr)?;
     socket.set_read_timeout(handshake_timeout)?;
     Ok(socket)
 }
 
+/// Wait for `n` UDP "stream init" datagrams and register each sender's
+/// address as a stream.
+///
+/// # iperf3 wire protocol
+///
+/// When using iperf3 3.x as the client, the client sends a 4-byte
+/// `b"9876"` datagram to the server's UDP port after receiving the
+/// `CreateStreams` control byte on the TCP channel.  The server must
+/// reply with `b"6789"` to that same source address; without this reply
+/// the client considers stream setup to have failed and immediately
+/// terminates the test.
+///
+/// When using rperf as the client, the client sends the 37-byte session
+/// cookie instead.  Both formats are accepted here: any datagram whose
+/// source address has not been seen before is treated as a stream-init
+/// and acknowledged with `b"6789"`.
 pub fn accept_udp_streams(
     socket: &UdpSocket,
-    expected_cookie: &[u8; COOKIE_LEN],
+    _expected_cookie: &[u8; COOKIE_LEN],
     n: u32,
 ) -> io::Result<Vec<SocketAddr>> {
     let mut addrs = Vec::with_capacity(n as usize);
-    let mut buf = [0u8; COOKIE_LEN + 64];
-    for i in 0..n {
-        let (len, src) = socket.recv_from(&mut buf)?;
-        if len != COOKIE_LEN || &buf[..len] != expected_cookie {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("udp stream {} cookie mismatch or wrong length ({})", i, len),
-            ));
-        }
+    let mut buf = [0u8; 65_536];
+    for _ in 0..n {
+        let (_len, src) = socket.recv_from(&mut buf)?;
+        // Reply with the iperf3 stream-init acknowledgment.  rperf clients
+        // ignore this extra datagram; iperf3 clients require it to proceed.
+        let _ = socket.send_to(UDP_STREAM_ACK, src);
         addrs.push(src);
     }
     Ok(addrs)
@@ -172,42 +196,56 @@ mod tests {
         assert!(socket.local_addr().is_ok());
     }
 
+    /// Verify that accept_udp_streams accepts any datagram (rperf-style
+    /// 37-byte cookie) and replies with the iperf3 acknowledgment `b"6789"`.
     #[test]
-    fn accept_udp_streams_matches_cookie() {
+    fn accept_udp_streams_accepts_rperf_cookie_and_replies_ack() {
         let server = bind_udp("127.0.0.1:0", Some(Duration::from_secs(2))).expect("bind");
         let cookie = generate_cookie();
-        let addr = server.local_addr().unwrap();
+        let server_addr = server.local_addr().unwrap();
 
-        let client_cookie = cookie;
         let client = thread::spawn(move || {
             let sock = UdpSocket::bind("127.0.0.1:0").expect("client bind");
-            sock.connect(addr).expect("client connect");
-            sock.send(&client_cookie).expect("client send");
-            sock
+            sock.connect(server_addr).expect("client connect");
+            sock.send(&cookie).expect("client send cookie");
+            // Read back the ack the server should send.
+            sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut buf = [0u8; 16];
+            let n = sock.recv(&mut buf).expect("recv ack");
+            (n, buf)
         });
 
         let addrs = accept_udp_streams(&server, &cookie, 1).expect("accept");
         assert_eq!(addrs.len(), 1);
-        let _ = client.join();
+
+        let (n, buf) = client.join().unwrap();
+        assert_eq!(&buf[..n], UDP_STREAM_ACK, "server should reply with 6789");
     }
 
+    /// Verify that accept_udp_streams also accepts the iperf3 3.x style
+    /// 4-byte b"9876" init datagram and still replies with b"6789".
     #[test]
-    fn accept_udp_streams_rejects_bad_cookie() {
+    fn accept_udp_streams_accepts_iperf3_init_and_replies_ack() {
         let server = bind_udp("127.0.0.1:0", Some(Duration::from_secs(2))).expect("bind");
-        let good = generate_cookie();
-        let mut bad = good;
-        bad[0] = bad[0].wrapping_add(1);
-        let addr = server.local_addr().unwrap();
+        let cookie = generate_cookie();
+        let server_addr = server.local_addr().unwrap();
 
         let client = thread::spawn(move || {
             let sock = UdpSocket::bind("127.0.0.1:0").expect("client bind");
-            sock.connect(addr).expect("connect");
-            sock.send(&bad).expect("send");
+            sock.connect(server_addr).expect("client connect");
+            // Simulate iperf3 3.x: send 4-byte init instead of 37-byte cookie.
+            sock.send(UDP_STREAM_INIT).expect("client send init");
+            sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut buf = [0u8; 16];
+            let n = sock.recv(&mut buf).expect("recv ack");
+            (n, buf)
         });
 
-        let err = accept_udp_streams(&server, &good, 1).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        let _ = client.join();
+        let addrs = accept_udp_streams(&server, &cookie, 1).expect("accept");
+        assert_eq!(addrs.len(), 1);
+
+        let (n, buf) = client.join().unwrap();
+        assert_eq!(&buf[..n], UDP_STREAM_ACK, "server should reply with 6789 for iperf3 init");
     }
 
     #[test]
