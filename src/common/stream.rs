@@ -1,9 +1,12 @@
+use std::net::UdpSocket;
 use std::sync::mpsc;
 use std::{thread, time::{Duration, Instant}};
 
 use super::cookie::COOKIE_LEN;
 use super::interval::IntervalReporter;
+use super::pacing::TokenBucket;
 use super::test::ClientStreamReceipt;
+use super::udp_header::{UdpHeader, UDP_HEADER_LEN};
 use super::{connect, protocol::Protocol, test::Test, timer::Timer, Message};
 
 #[derive(Default)]
@@ -125,6 +128,110 @@ impl Stream {
         });
     }
 
+    pub fn start_udp(test: &Test, host: String, cookie: [u8; COOKIE_LEN], stream_id: u32) {
+        let tx = test.tx_channel.clone();
+        let receipt_tx = test.receipt_tx.clone();
+        let len = test.config.len as usize;
+        let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
+        let omit = Duration::from_secs(test.config.omit as u64);
+        let bandwidth = test.config.bandwidth;
+
+        thread::spawn(move || {
+            let mut receipt = ClientStreamReceipt::empty(stream_id);
+
+            let socket = match UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("udp bind failed: {:?}", e);
+                    emit_stream_finished(&receipt_tx, receipt, &tx);
+                    return;
+                }
+            };
+            if let Err(e) = socket.connect(&host) {
+                eprintln!("udp connect failed: {:?}", e);
+                emit_stream_finished(&receipt_tx, receipt, &tx);
+                return;
+            }
+
+            if let Err(e) = socket.send(&cookie) {
+                eprintln!("udp cookie send failed: {:?}", e);
+                emit_stream_finished(&receipt_tx, receipt, &tx);
+                return;
+            }
+
+            if len < UDP_HEADER_LEN {
+                eprintln!("packet len {} smaller than UDP header {}", len, UDP_HEADER_LEN);
+                emit_stream_finished(&receipt_tx, receipt, &tx);
+                return;
+            }
+            let mut packet = vec![1u8; len];
+            let timer = Timer::new();
+            let mut bucket = TokenBucket::new(bandwidth, Instant::now());
+            let mut seq: i64 = 0;
+
+            while !should_stop(&timer, duration) {
+                let now = Instant::now();
+                if let Some(wait) = bucket.wait(now) {
+                    std::thread::sleep(wait);
+                    continue;
+                }
+                let epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let hdr = UdpHeader {
+                    tv_sec: epoch.as_secs() as u32,
+                    tv_usec: epoch.subsec_micros(),
+                    seq,
+                };
+                if hdr.encode(&mut packet[..UDP_HEADER_LEN]).is_err() {
+                    break;
+                }
+                match socket.send(&packet) {
+                    Ok(n) if n > 0 => {
+                        bucket.record(n as u64);
+                        let sent_at = Instant::now();
+                        if receipt.first_send_at.is_none() {
+                            receipt.first_send_at = Some(sent_at);
+                        }
+                        receipt.last_send_at = Some(sent_at);
+                        receipt.bytes_sent += n as u64;
+                        receipt.packets += 1;
+                        seq += 1;
+
+                        let first = receipt.first_send_at.expect("set above");
+                        let in_omit = sent_at.duration_since(first) < omit;
+                        if in_omit {
+                            receipt.bytes_omit += n as u64;
+                        } else if receipt.first_measured_at.is_none() {
+                            receipt.first_measured_at = Some(sent_at);
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(e) => {
+                        eprintln!("udp send error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+
+            // Sentinel packet: seq = -1, minimal payload (header only).
+            let epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let sentinel = UdpHeader {
+                tv_sec: epoch.as_secs() as u32,
+                tv_usec: epoch.subsec_micros(),
+                seq: -1,
+            };
+            let mut final_pkt = [0u8; UDP_HEADER_LEN];
+            if sentinel.encode(&mut final_pkt).is_ok() {
+                let _ = socket.send(&final_pkt);
+            }
+
+            emit_stream_finished(&receipt_tx, receipt, &tx);
+        });
+    }
+
     pub fn send_data(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self.protocol {
             Some(ref mut protocol) => protocol.transfer.send(buf),
@@ -216,5 +323,68 @@ mod tests {
 
         let err = stream.send_data(b"payload").expect_err("should bubble");
         assert_eq!(err.kind(), ErrorKind::Other);
+    }
+
+    #[test]
+    fn start_udp_sends_cookie_then_data_then_sentinel() {
+        use crate::common::cookie::COOKIE_LEN;
+        use crate::common::test::{Config, Test};
+        use crate::common::udp_header::{UdpHeader, UDP_HEADER_LEN};
+        use crate::common::TransportKind;
+        use std::net::UdpSocket;
+        use std::time::Duration;
+
+        let server = UdpSocket::bind("127.0.0.1:0").expect("bind server");
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set read timeout");
+        let port = server.local_addr().unwrap().port();
+
+        let mut cfg = Config::with_host("127.0.0.1");
+        cfg.port = port;
+        cfg.time = 1;
+        cfg.parallel = 1;
+        cfg.len = 256;
+        cfg.transport = TransportKind::Udp;
+        // 100 Kbps → ~49 packets/s → ~49 total in 1 s, well within the
+        // 200-iteration drain loop below.
+        cfg.bandwidth = 100_000;
+
+        let test = Test::new(cfg);
+        let cookie = test.cookie;
+        let host = test.config.host_port();
+
+        Stream::start_udp(&test, host, cookie, 1);
+
+        // First datagram: cookie (37 bytes).
+        let mut buf = [0u8; 2048];
+        let (n, _src) = server.recv_from(&mut buf).expect("recv cookie");
+        assert_eq!(n, COOKIE_LEN);
+        assert_eq!(&buf[..n], &cookie);
+
+        // Then at least one data datagram with a decodable header.
+        let (n, _src) = server.recv_from(&mut buf).expect("recv data");
+        assert!(n >= UDP_HEADER_LEN, "data packet too small: {}", n);
+        let hdr = UdpHeader::decode(&buf[..UDP_HEADER_LEN]).expect("decode header");
+        assert!(hdr.seq >= 0, "first data packet should not be sentinel");
+        assert_eq!(n, 256, "packet length should match config.len");
+
+        // Drain until we see the sentinel (or time out).
+        let mut saw_sentinel = false;
+        for _ in 0..200 {
+            let (n, _src) = match server.recv_from(&mut buf) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+            if n < UDP_HEADER_LEN {
+                continue;
+            }
+            let hdr = UdpHeader::decode(&buf[..UDP_HEADER_LEN]).unwrap();
+            if hdr.is_sentinel() {
+                saw_sentinel = true;
+                break;
+            }
+        }
+        assert!(saw_sentinel, "never saw sentinel packet");
     }
 }
