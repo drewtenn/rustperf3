@@ -27,6 +27,11 @@ client can talk to `rperf` server, the MVP is working.
 - CLI: `-s` and `-c` are mutually exclusive, one is required.
 - Self-test: `cargo test --test self_test` spins up an in-process
   server and runs a client against it over loopback.
+- **UDP data path (`-u`).** Full iPerf3-compatible UDP: 16-byte
+  datagram header, RFC 1889 jitter EWMA, lost-packet and out-of-order
+  accounting, sender-side bandwidth pacing (`-b`, default 1 Mbps for
+  UDP), and an end-of-test sentinel packet. Works bidirectionally
+  against real iPerf3.
 
 ### Accuracy features
 
@@ -68,6 +73,8 @@ Options:
   -t, --time <TIME>          Test duration in seconds [default: 10]
   -P, --parallel <PARALLEL>  Number of parallel streams [default: 1]
   -l, --len <LEN>            Bytes per write (TCP buffer length) [default: 131072]
+  -u, --udp                  Use UDP instead of TCP for data streams
+  -b, --bandwidth <RATE>     Target bandwidth for UDP sender (e.g. 100M, 1G, 0 = unlimited)
   -O, --omit <OMIT>          Seconds to omit at the start of the test [default: 0]
   -h, --help                 Print help
   -V, --version              Print version
@@ -89,6 +96,16 @@ Or run the in-process self-test:
 cargo test --test self_test -- --nocapture
 ```
 
+UDP at 100 Mbps for 3 seconds:
+
+```
+# Terminal A
+cargo run --release -- -s -p 5202 -u
+
+# Terminal B
+cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 100M -t 3
+```
+
 ### Test against real iPerf3
 
 rperf client ↔ iperf3 server:
@@ -96,6 +113,20 @@ rperf client ↔ iperf3 server:
 ```
 iperf3 -s -p 5202
 cargo run --release -- -c 127.0.0.1 -p 5202 -t 3
+```
+
+rperf client ↔ iperf3 server (UDP):
+
+```
+iperf3 -s -p 5202
+cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 50M -t 3
+```
+
+iperf3 client ↔ rperf server (UDP):
+
+```
+cargo run --release -- -s -p 5202
+iperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3
 ```
 
 ## Building
@@ -131,7 +162,6 @@ tests/
 
 ## Out of scope
 
-- UDP data path (packet accounting, jitter, lost/out-of-order)
 - Reverse or bidirectional tests
 - Concurrent tests on a single server (one-shot only today)
 - Async/tokio runtime
