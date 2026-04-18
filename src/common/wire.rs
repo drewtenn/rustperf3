@@ -33,6 +33,10 @@ pub struct ClientOptions {
     pub parallel: u32,
     pub len: u32,
     pub client_version: String,
+    #[serde(default)]
+    pub udp: bool,
+    #[serde(default)]
+    pub bandwidth: u64,
 }
 
 impl ClientOptions {
@@ -44,6 +48,8 @@ impl ClientOptions {
             parallel,
             len,
             client_version: CLIENT_VERSION.to_string(),
+            udp: false,
+            bandwidth: 0,
         }
     }
 }
@@ -332,5 +338,34 @@ mod tests {
 
         let err: io::Error = recv_framed_json::<Results>(&mut mock).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn options_defaults_udp_false_and_bandwidth_zero() {
+        let opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        assert!(!opts.udp);
+        assert_eq!(opts.bandwidth, 0);
+    }
+
+    #[test]
+    fn options_udp_roundtrip() {
+        let mut opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        opts.udp = true;
+        opts.bandwidth = 1_000_000;
+
+        let json = serde_json::to_string(&opts).unwrap();
+        assert!(json.contains("\"udp\":true"));
+        assert!(json.contains("\"bandwidth\":1000000"));
+
+        let back: ClientOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, opts);
+    }
+
+    #[test]
+    fn options_parses_legacy_payload_without_udp_or_bandwidth() {
+        let legacy = r#"{"tcp":true,"omit":0,"time":5,"parallel":1,"len":131072,"client_version":"3.1.3"}"#;
+        let opts: ClientOptions = serde_json::from_str(legacy).expect("parse legacy");
+        assert!(!opts.udp);
+        assert_eq!(opts.bandwidth, 0);
     }
 }
