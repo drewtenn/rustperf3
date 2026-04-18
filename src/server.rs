@@ -26,13 +26,17 @@ use crate::common::Message;
 /// omit / measured plus the timestamps of the first byte, first
 /// post-omit byte, and last byte. This lets the server report steady-
 /// state throughput separately from the full test window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamReceipt {
     pub bytes: u64,
     pub bytes_omit: u64,
     pub first_byte_at: Option<Instant>,
     pub first_measured_at: Option<Instant>,
     pub last_byte_at: Option<Instant>,
+    pub jitter_ms: f64,
+    pub lost: u64,
+    pub ooo: u64,
+    pub packets: u64,
 }
 
 impl StreamReceipt {
@@ -43,6 +47,10 @@ impl StreamReceipt {
             first_byte_at: None,
             first_measured_at: None,
             last_byte_at: None,
+            jitter_ms: 0.0,
+            lost: 0,
+            ooo: 0,
+            packets: 0,
         }
     }
 
@@ -807,6 +815,10 @@ mod tests {
             first_byte_at: first,
             first_measured_at: first,
             last_byte_at: last,
+            jitter_ms: 0.0,
+            lost: 0,
+            ooo: 0,
+            packets: 0,
         }
     }
 
@@ -926,6 +938,15 @@ mod tests {
     fn format_summary_handles_zero_duration_without_panic() {
         // Just make sure we don't divide by zero.
         let _ = format_summary(1_000, std::time::Duration::from_secs(0), 1);
+    }
+
+    #[test]
+    fn server_receipt_empty_zeros_udp_fields() {
+        let r = StreamReceipt::empty();
+        assert_eq!(r.jitter_ms, 0.0);
+        assert_eq!(r.lost, 0);
+        assert_eq!(r.ooo, 0);
+        assert_eq!(r.packets, 0);
     }
 
     #[test]
