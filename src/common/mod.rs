@@ -3,13 +3,21 @@ use num_enum::TryFromPrimitive;
 use self::cookie::COOKIE_LEN;
 use self::protocol::Protocol;
 
+pub use transport_kind::TransportKind;
+
+pub mod bandwidth;
 pub mod cookie;
 pub mod cpu;
 pub mod interval;
+pub mod jitter;
+pub mod pacing;
 pub mod protocol;
 pub mod test;
 pub mod timer;
 pub mod stream;
+pub mod transport_kind;
+pub mod udp_header;
+pub mod udp_session;
 pub mod wire;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, TryFromPrimitive)]

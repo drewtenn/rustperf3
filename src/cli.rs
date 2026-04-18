@@ -9,6 +9,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::common::test::Config;
 use crate::common::wire::DEFAULT_TCP_LEN;
+use crate::common::{bandwidth, TransportKind};
 
 /// Default iPerf3 control port.
 pub const DEFAULT_PORT: u16 = 5201;
@@ -21,6 +22,8 @@ pub const DEFAULT_BIND: &str = "0.0.0.0";
 /// Default omit-window length in seconds. Matches iPerf3's behavior of
 /// not omitting anything unless explicitly requested.
 pub const DEFAULT_OMIT_SECS: u32 = 0;
+/// Default bandwidth for UDP streams (1 Mbps), matching iperf3's UDP default.
+pub const DEFAULT_UDP_BANDWIDTH_BPS: u64 = 1_000_000;
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[command(name = "rperf", version, about = "Rust iPerf3-compatible client/server")]
@@ -58,6 +61,15 @@ pub struct Cli {
     /// start from the reported measurement window). iPerf3-compatible.
     #[arg(short = 'O', long = "omit", default_value_t = DEFAULT_OMIT_SECS)]
     pub omit: u32,
+
+    /// Use UDP rather than TCP for the data streams.
+    #[arg(short = 'u', long = "udp")]
+    pub udp: bool,
+
+    /// Target bandwidth for UDP (and TCP when set). Accepts integer bps,
+    /// or K/M/G suffixes. `0` = unlimited. Default: `1M` when `-u`, else `0`.
+    #[arg(short = 'b', long = "bandwidth")]
+    pub bandwidth: Option<String>,
 }
 
 /// Result of a successful parse: either client or server mode, each
@@ -70,6 +82,20 @@ pub enum Mode {
 
 impl Cli {
     pub fn into_mode(self) -> Mode {
+        self.try_into_mode().unwrap_or_else(|e| {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        })
+    }
+
+    pub fn try_into_mode(self) -> Result<Mode, String> {
+        let transport = if self.udp { TransportKind::Udp } else { TransportKind::Tcp };
+        let bandwidth = match self.bandwidth.as_deref() {
+            Some(s) => bandwidth::parse(s)?,
+            None if self.udp => DEFAULT_UDP_BANDWIDTH_BPS,
+            None => 0,
+        };
+
         let base = Config {
             host: self.host.clone().unwrap_or_else(|| DEFAULT_BIND.to_string()),
             port: self.port,
@@ -77,12 +103,10 @@ impl Cli {
             parallel: self.parallel,
             len: self.len,
             omit: self.omit,
+            transport,
+            bandwidth,
         };
-        if self.server {
-            Mode::Server(base)
-        } else {
-            Mode::Client(base)
-        }
+        Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
     }
 }
 
@@ -164,5 +188,54 @@ mod tests {
             }
             Mode::Client(_) => panic!("expected server mode"),
         }
+    }
+
+    #[test]
+    fn parses_udp_flag() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u"]).unwrap();
+        assert!(cli.udp);
+        match cli.into_mode() {
+            Mode::Client(cfg) => {
+                assert_eq!(cfg.transport, crate::common::TransportKind::Udp);
+                assert_eq!(cfg.bandwidth, 1_000_000);
+            }
+            Mode::Server(_) => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn parses_bandwidth_flag() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "100M"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 100_000_000),
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn bandwidth_zero_is_unlimited() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "0"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 0),
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn tcp_default_bandwidth_is_zero() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => {
+                assert_eq!(cfg.transport, crate::common::TransportKind::Tcp);
+                assert_eq!(cfg.bandwidth, 0);
+            }
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn invalid_bandwidth_errors_on_try_into_mode() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-b", "garbage"]).unwrap();
+        assert!(cli.try_into_mode().is_err());
     }
 }

@@ -31,6 +31,8 @@ fn self_test_loopback_tcp_short_run() {
         parallel: 1,
         len: 131_072,
         omit: 0,
+        transport: rperf::TransportKind::Tcp,
+        bandwidth: 0,
     };
 
     // Tiny delay so the server thread reaches listener.accept() before
@@ -69,6 +71,8 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         parallel: 1,
         len: 131_072,
         omit: 1,
+        transport: rperf::TransportKind::Tcp,
+        bandwidth: 0,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -120,5 +124,67 @@ fn server_times_out_when_client_goes_silent_after_cookie() {
         elapsed < Duration::from_secs(2),
         "server took too long to time out: {:?}",
         elapsed
+    );
+}
+
+#[test]
+fn self_test_loopback_udp_short_run() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = listener.local_addr().expect("local_addr").port();
+
+    let server = thread::spawn(move || rperf::run_server_on(listener));
+
+    // 10 Mbps target, 1400-byte datagrams → ~892 packets/s expected.
+    const PACKET_SIZE: u64 = 1400;
+    let client_cfg = rperf::Config {
+        host: "127.0.0.1".to_string(),
+        port,
+        time: 1,
+        parallel: 1,
+        len: PACKET_SIZE as u32,
+        omit: 0,
+        transport: rperf::TransportKind::Udp,
+        bandwidth: 10_000_000,
+    };
+
+    thread::sleep(Duration::from_millis(50));
+    rperf::run_client(client_cfg);
+
+    let total_bytes = server
+        .join()
+        .expect("server thread panicked")
+        .expect("server returned error");
+
+    // 10 Mbps for 1s ≈ 1.25 MB; require at least 100 KB as a very
+    // conservative floor that passes even on loaded CI machines.
+    assert!(
+        total_bytes > 100_000,
+        "server saw {} bytes, expected > 100 000",
+        total_bytes
+    );
+
+    // Assert a minimum packet-rate: total_bytes / PACKET_SIZE should be
+    // at least 10 packets — well under the ~892/s expected at 10 Mbps,
+    // but enough to confirm UDP data flow and not just a stray datagram.
+    let approx_packets = total_bytes / PACKET_SIZE;
+    assert!(
+        approx_packets >= 10,
+        "estimated packet count {} (bytes={} / pkt_size={}) is suspiciously low; \
+         UDP data-path may not be functioning",
+        approx_packets,
+        total_bytes,
+        PACKET_SIZE
+    );
+
+    // The approximate packet count should be consistent with the byte count:
+    // bytes must be at least approx_packets * PACKET_SIZE (packets could be
+    // smaller than PACKET_SIZE only if fragmented, which doesn't happen on
+    // loopback with 1400-byte datagrams).
+    assert!(
+        total_bytes >= approx_packets * PACKET_SIZE,
+        "byte count {} is less than estimated packets {} × packet_size {}",
+        total_bytes,
+        approx_packets,
+        PACKET_SIZE
     );
 }

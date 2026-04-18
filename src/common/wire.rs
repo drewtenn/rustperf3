@@ -25,14 +25,24 @@ pub const DEFAULT_TCP_LEN: usize = 131_072;
 /// Options sent during ParamExchange.
 ///
 /// Field names are lowercase to match iPerf3's wire format.
+///
+/// `tcp` carries `#[serde(default)]` because iperf3 3.x omits the field
+/// entirely when running in UDP mode — the absence of `tcp` implicitly
+/// means `false` (i.e. it is a UDP test).  Without the default the
+/// deserializer returns a "missing field" error and the handshake fails.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientOptions {
+    #[serde(default)]
     pub tcp: bool,
     pub omit: u32,
     pub time: u32,
     pub parallel: u32,
     pub len: u32,
     pub client_version: String,
+    #[serde(default)]
+    pub udp: bool,
+    #[serde(default)]
+    pub bandwidth: u64,
 }
 
 impl ClientOptions {
@@ -44,6 +54,8 @@ impl ClientOptions {
             parallel,
             len,
             client_version: CLIENT_VERSION.to_string(),
+            udp: false,
+            bandwidth: 0,
         }
     }
 }
@@ -332,5 +344,50 @@ mod tests {
 
         let err: io::Error = recv_framed_json::<Results>(&mut mock).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn options_defaults_udp_false_and_bandwidth_zero() {
+        let opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        assert!(!opts.udp);
+        assert_eq!(opts.bandwidth, 0);
+    }
+
+    #[test]
+    fn options_udp_roundtrip() {
+        let mut opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        opts.udp = true;
+        opts.bandwidth = 1_000_000;
+
+        let json = serde_json::to_string(&opts).unwrap();
+        assert!(json.contains("\"udp\":true"));
+        assert!(json.contains("\"bandwidth\":1000000"));
+
+        let back: ClientOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, opts);
+    }
+
+    #[test]
+    fn options_parses_legacy_payload_without_udp_or_bandwidth() {
+        let legacy = r#"{"tcp":true,"omit":0,"time":5,"parallel":1,"len":131072,"client_version":"3.1.3"}"#;
+        let opts: ClientOptions = serde_json::from_str(legacy).expect("parse legacy");
+        assert!(!opts.udp);
+        assert_eq!(opts.bandwidth, 0);
+    }
+
+    /// Regression test: the exact JSON that iperf3 3.21 sends when invoked with
+    /// `-u` (UDP mode).  The `tcp` field is absent — iperf3 3.x omits it for
+    /// UDP tests — which used to cause a serde "missing field" error and close
+    /// the control socket before the handshake completed.
+    #[test]
+    fn options_parses_iperf3_321_udp_payload() {
+        let body = r#"{"udp":true,"omit":0,"time":1,"num":0,"blockcount":0,"parallel":1,"len":16332,"bandwidth":1000000,"pacing_timer":1000,"gso":0,"gso_dg_size":0,"gso_bf_size":65507,"gro":0,"gro_bf_size":65507,"client_version":"3.21"}"#;
+        let opts: ClientOptions = serde_json::from_str(body).expect("should parse iperf3 3.21 UDP options");
+        assert!(opts.udp, "udp should be true");
+        assert!(!opts.tcp, "tcp should default to false when absent");
+        assert_eq!(opts.time, 1);
+        assert_eq!(opts.parallel, 1);
+        assert_eq!(opts.bandwidth, 1_000_000);
+        assert_eq!(opts.client_version, "3.21");
     }
 }
