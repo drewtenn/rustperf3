@@ -22,6 +22,10 @@ pub const DEFAULT_BIND: &str = "0.0.0.0";
 /// Default omit-window length in seconds. Matches iPerf3's behavior of
 /// not omitting anything unless explicitly requested.
 pub const DEFAULT_OMIT_SECS: u32 = 0;
+/// iPerf3's default UDP payload size. Small enough to fit in a standard
+/// Ethernet MTU without IP fragmentation (1500 − 20 IP − 8 UDP = 1472;
+/// iPerf3 uses 1460 to leave headroom for encapsulation).
+pub const DEFAULT_UDP_LEN: u32 = 1460;
 /// Default bandwidth for UDP streams (1 Mbps), matching iperf3's UDP default.
 pub const DEFAULT_UDP_BANDWIDTH_BPS: u64 = 1_000_000;
 
@@ -53,9 +57,11 @@ pub struct Cli {
     #[arg(short = 'P', long = "parallel", default_value_t = DEFAULT_PARALLEL)]
     pub parallel: u32,
 
-    /// Bytes per write (TCP buffer length).
-    #[arg(short = 'l', long = "len", default_value_t = DEFAULT_TCP_LEN as u32)]
-    pub len: u32,
+    /// Bytes per write. Default depends on transport: TCP uses iPerf3's
+    /// 128 KiB, UDP uses 1460 bytes (sub-MTU). When set explicitly,
+    /// the value is honored as-is.
+    #[arg(short = 'l', long = "len")]
+    pub len: Option<u32>,
 
     /// Seconds to omit at the start of the test (excludes TCP slow
     /// start from the reported measurement window). iPerf3-compatible.
@@ -95,13 +101,14 @@ impl Cli {
             None if self.udp => DEFAULT_UDP_BANDWIDTH_BPS,
             None => 0,
         };
+        let len = self.len.unwrap_or(if self.udp { DEFAULT_UDP_LEN } else { DEFAULT_TCP_LEN as u32 });
 
         let base = Config {
             host: self.host.clone().unwrap_or_else(|| DEFAULT_BIND.to_string()),
             port: self.port,
             time: self.time,
             parallel: self.parallel,
-            len: self.len,
+            len,
             omit: self.omit,
             transport,
             bandwidth,
@@ -127,7 +134,7 @@ mod tests {
         assert_eq!(cli.port, 5202);
         assert_eq!(cli.time, 3);
         assert_eq!(cli.parallel, 2);
-        assert_eq!(cli.len, 65_536);
+        assert_eq!(cli.len, Some(65_536));
     }
 
     #[test]
@@ -136,7 +143,25 @@ mod tests {
         assert_eq!(cli.port, DEFAULT_PORT);
         assert_eq!(cli.time, DEFAULT_TIME_SECS);
         assert_eq!(cli.parallel, DEFAULT_PARALLEL);
-        assert_eq!(cli.len, DEFAULT_TCP_LEN as u32);
+        assert_eq!(cli.len, None);
+    }
+
+    #[test]
+    fn udp_default_len_is_sub_mtu() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.len, DEFAULT_UDP_LEN),
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn tcp_default_len_is_iperf3_tcp_default() {
+        let cli = Cli::try_parse_from(["rperf", "-c", "h"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.len, DEFAULT_TCP_LEN as u32),
+            _ => panic!("expected client"),
+        }
     }
 
     #[test]
