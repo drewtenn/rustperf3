@@ -3,6 +3,8 @@ use num_enum::TryFromPrimitive;
 use self::cookie::COOKIE_LEN;
 use self::protocol::Protocol;
 
+pub use transport_kind::TransportKind;
+
 pub mod bandwidth;
 pub mod cookie;
 pub mod cpu;
@@ -13,6 +15,7 @@ pub mod protocol;
 pub mod test;
 pub mod timer;
 pub mod stream;
+pub mod transport_kind;
 pub mod udp_header;
 pub mod wire;
 
