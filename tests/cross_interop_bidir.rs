@@ -55,6 +55,11 @@ fn rperf3_client_bidir_against_iperf3_server() {
         total_blocks: None,
         title: None,
         affinity: None,
+        username: None,
+        password: None,
+        rsa_public_key: None,
+        rsa_private_key: None,
+        authorized_users: None,
     };
     rperf3::run_client(cfg);
     let output = iperf3_server.wait_with_output().expect("wait iperf3");

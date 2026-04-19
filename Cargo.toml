@@ -7,9 +7,13 @@ description = "rPerf3 — a Rust iPerf3-compatible network throughput tool."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4.3.1", features = ["derive"] }
 num_enum = "0.6.1"
 rand = "0.8"
+rpassword = "7"
+rsa = "0.9"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -156,6 +156,28 @@ pub struct Cli {
     /// Parsed stub — application is a Linux follow-up.
     #[arg(short = 'A', long = "affinity")]
     pub affinity: Option<String>,
+
+    /// Username for RSA authentication (client-side).
+    #[arg(long = "username")]
+    pub username: Option<String>,
+
+    /// Password for RSA authentication (client-side). If omitted and
+    /// --rsa-public-key is set, the password is prompted interactively.
+    #[arg(long = "password")]
+    pub password: Option<String>,
+
+    /// Path to the server's RSA public key PEM file (client-side).
+    #[arg(long = "rsa-public-key")]
+    pub rsa_public_key: Option<std::path::PathBuf>,
+
+    /// Path to the server's RSA private key PEM file (server-side).
+    #[arg(long = "rsa-private-key")]
+    pub rsa_private_key: Option<std::path::PathBuf>,
+
+    /// Path to the authorized users CSV file (server-side).
+    /// Format: one `username,sha256hex_of_password` per line.
+    #[arg(long = "authorized-users")]
+    pub authorized_users: Option<std::path::PathBuf>,
 }
 
 /// Result of a successful parse: either client or server mode, each
@@ -239,6 +261,11 @@ impl Cli {
             total_blocks: self.blockcount,
             title: self.title.clone(),
             affinity: self.affinity,
+            username: self.username,
+            password: self.password,
+            rsa_public_key: self.rsa_public_key,
+            rsa_private_key: self.rsa_private_key,
+            authorized_users: self.authorized_users,
         };
         Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
     }

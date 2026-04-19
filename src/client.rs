@@ -1,3 +1,4 @@
+use crate::common::auth;
 use crate::common::cpu::{self, CpuUsage};
 use crate::common::stream::{self, Stream};
 use crate::common::test::{Config, Test};
@@ -114,6 +115,11 @@ fn handle_message_client(test: &mut Test, message: Message) -> bool {
         }
 
         Message::IperfDone => {
+            is_done = true;
+        }
+
+        Message::AccessDenied => {
+            eprintln!("error: server rejected connection (access denied)");
             is_done = true;
         }
 
@@ -369,6 +375,23 @@ fn send_options(test: &mut Test) {
     }
     options.reverse = test.config.direction.is_reverse();
     options.bidirectional = test.config.direction.is_bidirectional();
+
+    // Attach RSA authtoken when a public key and username are configured.
+    if let (Some(pk_path), Some(user)) = (&test.config.rsa_public_key, &test.config.username) {
+        match auth::load_public_key_pem(pk_path) {
+            Ok(pubkey) => {
+                let password = test.config.password.clone().unwrap_or_else(|| {
+                    rpassword::prompt_password("Password: ").unwrap_or_default()
+                });
+                match auth::build_authtoken(&pubkey, user, &password) {
+                    Ok(token) => options.authtoken = Some(token),
+                    Err(e) => eprintln!("auth token build failed: {}", e),
+                }
+            }
+            Err(e) => eprintln!("load pubkey failed: {}", e),
+        }
+    }
+
     if let Err(e) = send_framed_json(protocol.transfer.as_mut(), &options) {
         eprintln!("failed to send options: {:?}", e);
     }

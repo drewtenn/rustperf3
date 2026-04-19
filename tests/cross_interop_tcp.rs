@@ -71,6 +71,11 @@ fn rperf3_client_talks_to_iperf3_server_tcp() {
         total_blocks: None,
         title: None,
         affinity: None,
+        username: None,
+        password: None,
+        rsa_public_key: None,
+        rsa_private_key: None,
+        authorized_users: None,
     };
     rperf3::run_client(client_cfg);
 

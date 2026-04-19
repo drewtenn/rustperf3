@@ -9,21 +9,92 @@
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::common::auth;
 use crate::common::cookie::{recv_cookie, COOKIE_LEN};
-use crate::common::udp_session::{accept_udp_streams, bind_udp, run_udp_receiver};
 use crate::common::cpu::{self, CpuUsage};
 use crate::common::interval::IntervalReporter;
 use crate::common::protocol::{Protocol, Tcp};
 use crate::common::test::Config;
+use crate::common::udp_session::{accept_udp_streams, bind_udp, run_udp_receiver};
 use crate::common::wire::{
     recv_control_byte, recv_framed_json, send_control_byte, send_framed_json, ClientOptions,
     Results, StreamResults,
 };
 use crate::common::Message;
+
+/// Global auth configuration set once at server startup via `set_auth_config`.
+/// Tests that don't go through `run_server` never populate this, so auth is
+/// effectively disabled for them.
+static AUTH_CONFIG: OnceLock<(Option<PathBuf>, Option<PathBuf>)> = OnceLock::new();
+
+/// Configure the server's RSA private key and authorized-users file paths.
+/// Must be called before `run_server_loop` / `serve_one_session` runs.
+/// Subsequent calls are silently ignored (OnceLock semantics).
+pub fn set_auth_config(priv_key: Option<PathBuf>, authorized: Option<PathBuf>) {
+    let _ = AUTH_CONFIG.set((priv_key, authorized));
+}
+
+/// Validate an incoming `ClientOptions` authtoken against the global
+/// `AUTH_CONFIG`. Returns `Ok(())` when:
+/// * auth is not configured (no private key / no users file), or
+/// * a valid, in-window authtoken is present and the user is known.
+fn check_auth(control: &mut Protocol, opts: &ClientOptions) -> io::Result<()> {
+    let Some((Some(pk_path), Some(users_path))) = AUTH_CONFIG
+        .get()
+        .map(|(a, b)| (a.as_ref(), b.as_ref()))
+        .map(|(a, b)| (a.cloned(), b.cloned()))
+    else {
+        return Ok(()); // auth not configured
+    };
+
+    let deny = |control: &mut Protocol, msg: &str| -> io::Result<()> {
+        eprintln!("auth failed: {}", msg);
+        let _ = send_control_byte(control.transfer.as_mut(), Message::AccessDenied);
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, msg.to_string()))
+    };
+
+    let privkey = match auth::load_private_key_pem(&pk_path) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("auth config error: {}", e);
+            let _ = send_control_byte(control.transfer.as_mut(), Message::AccessDenied);
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, e));
+        }
+    };
+    let users = match auth::load_authorized_users(&users_path) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("auth config error: {}", e);
+            let _ = send_control_byte(control.transfer.as_mut(), Message::AccessDenied);
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, e));
+        }
+    };
+
+    let token = match opts.authtoken.as_ref() {
+        Some(t) => t,
+        None => return deny(control, "missing authtoken"),
+    };
+
+    let claim = match auth::decode_authtoken(&privkey, token) {
+        Ok(c) => c,
+        Err(e) => return deny(control, &e),
+    };
+
+    if let Err(e) = auth::validate_timestamp(&claim, auth::TIMESTAMP_SKEW_SECS) {
+        return deny(control, &e);
+    }
+
+    if let Err(e) = auth::authorize(&claim, &users) {
+        return deny(control, &e);
+    }
+
+    Ok(())
+}
 
 /// What a single reader thread observed. Keeps byte counts split into
 /// omit / measured plus the timestamps of the first byte, first
@@ -102,6 +173,11 @@ fn is_peer_closed(e: &io::Error) -> bool {
 /// configured address, then loops forever accepting sessions (unless
 /// `--one-off` was passed, in which case it exits after the first test).
 pub fn run_server(config: Config) {
+    // Configure auth before entering the accept loop so every session sees it.
+    if config.rsa_private_key.is_some() {
+        set_auth_config(config.rsa_private_key.clone(), config.authorized_users.clone());
+    }
+
     let bind_addr = config.host_port();
     let listener = match TcpListener::bind(&bind_addr) {
         Ok(l) => l,
@@ -241,6 +317,7 @@ fn serve_session_from_channel(
 ) -> io::Result<u64> {
     let cpu_start = cpu::sample();
     let opts = negotiate_options(&mut session.control)?;
+    check_auth(&mut session.control, &opts)?;
 
     if opts.udp {
         // Concurrent UDP not supported — reject and bail out.
@@ -366,6 +443,7 @@ fn serve_one_session(listener: &TcpListener, handshake_timeout: Option<Duration>
     let _ = cookie_display(&cookie);
 
     let opts = negotiate_options(&mut control)?;
+    check_auth(&mut control, &opts)?;
 
     let receipts = if opts.udp {
         run_udp_branch(&mut control, listener, &cookie, &opts, handshake_timeout)?
