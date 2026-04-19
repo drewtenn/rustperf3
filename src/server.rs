@@ -196,7 +196,7 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
             cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
         );
     }
-    println!("iperf Done.");
+    println!("rPerf3 Done.");
     Ok(total_bytes)
 }
 

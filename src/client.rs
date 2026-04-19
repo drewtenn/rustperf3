@@ -15,7 +15,7 @@ pub fn run_client(config: Config) {
     test.cpu_start = Some(cpu::sample());
 
     client_loop(&mut test);
-    println!("iperf Done.");
+    println!("rPerf3 Done.");
 }
 
 fn client_recv(test: &mut Test) -> bool {
