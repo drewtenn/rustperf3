@@ -128,6 +128,16 @@ pub struct Config {
 	pub title: Option<String>,
 	/// CPU affinity spec (-A). Linux-only; silently ignored elsewhere.
 	pub affinity: Option<String>,
+	/// Client: username for RSA authentication.
+	pub username: Option<String>,
+	/// Client: password for RSA authentication (prompt if None when public key is set).
+	pub password: Option<String>,
+	/// Client: path to the server's RSA public key PEM file.
+	pub rsa_public_key: Option<std::path::PathBuf>,
+	/// Server: path to the server's RSA private key PEM file.
+	pub rsa_private_key: Option<std::path::PathBuf>,
+	/// Server: path to the authorized users CSV file (user,sha256hex).
+	pub authorized_users: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -158,6 +168,11 @@ impl Config {
 			total_blocks: None,
 			title: None,
 			affinity: None,
+			username: None,
+			password: None,
+			rsa_public_key: None,
+			rsa_private_key: None,
+			authorized_users: None,
 		}
 	}
 
@@ -266,6 +281,11 @@ mod tests {
 			total_blocks: None,
 			title: None,
 			affinity: None,
+			username: None,
+			password: None,
+			rsa_public_key: None,
+			rsa_private_key: None,
+			authorized_users: None,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
 	}
