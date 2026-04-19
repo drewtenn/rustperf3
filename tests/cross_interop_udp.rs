@@ -1,5 +1,5 @@
 //! Cross-iperf3 UDP interop. Skips when the `iperf3` binary is not on
-//! PATH; otherwise runs rperf↔iperf3 in both directions.
+//! PATH; otherwise runs rPerf3↔iperf3 in both directions.
 
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ fn iperf3_available() -> bool {
 }
 
 #[test]
-fn rperf_client_talks_to_iperf3_server_udp() {
+fn rperf3_client_talks_to_iperf3_server_udp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -36,17 +36,17 @@ fn rperf_client_talks_to_iperf3_server_udp() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let client_cfg = rperf::Config {
+    let client_cfg = rperf3::Config {
         host: "127.0.0.1".into(),
         port,
         time: 1,
         parallel: 1,
         len: 1400,
         omit: 0,
-        transport: rperf::TransportKind::Udp,
+        transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
     };
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let output = iperf3_server.wait_with_output().expect("wait iperf3");
     assert!(output.status.success(), "iperf3 server failed: {:?}", output);
@@ -59,7 +59,7 @@ fn rperf_client_talks_to_iperf3_server_udp() {
 }
 
 #[test]
-fn iperf3_client_talks_to_rperf_server_udp() {
+fn iperf3_client_talks_to_rperf3_server_udp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -68,7 +68,7 @@ fn iperf3_client_talks_to_rperf_server_udp() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
     thread::sleep(Duration::from_millis(200));
 
     let iperf3_client = Command::new("iperf3")

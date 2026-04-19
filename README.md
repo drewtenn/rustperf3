@@ -1,4 +1,4 @@
-# rperf
+# rPerf3
 
 A small iPerf3-compatible network throughput tool in Rust.
 
@@ -11,8 +11,8 @@ bonus.
 
 The goal is protocol-level compatibility with iPerf3 (same wire format,
 same control messages, same cookie-multiplexed streams) — not feature
-parity. If `rperf` client can talk to an iPerf3 server, and an iPerf3
-client can talk to `rperf` server, the MVP is working.
+parity. If `rPerf3` client can talk to an iPerf3 server, and an iPerf3
+client can talk to `rPerf3` server, the MVP is working.
 
 ## What works today
 
@@ -64,7 +64,7 @@ not just "a number":
 ## Usage
 
 ```
-Usage: rperf [OPTIONS] <--server|--client <HOST>>
+Usage: rperf3 [OPTIONS] <--server|--client <HOST>>
 
 Options:
   -s, --server               Run as a server (listen for incoming connections)
@@ -108,21 +108,21 @@ cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 100M -t 3
 
 ### Test against real iPerf3
 
-rperf client ↔ iperf3 server:
+rPerf3 client ↔ iperf3 server:
 
 ```
 iperf3 -s -p 5202
 cargo run --release -- -c 127.0.0.1 -p 5202 -t 3
 ```
 
-rperf client ↔ iperf3 server (UDP):
+rPerf3 client ↔ iperf3 server (UDP):
 
 ```
 iperf3 -s -p 5202
 cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 50M -t 3
 ```
 
-iperf3 client ↔ rperf server (UDP):
+iperf3 client ↔ rPerf3 server (UDP):
 
 ```
 cargo run --release -- -s -p 5202

@@ -1,4 +1,4 @@
-//! CLI parsing for `rperf`.
+//! CLI parsing for `rPerf3`.
 //!
 //! Accepts either `-s` (server mode) or `-c <host>` (client mode) as
 //! mutually-exclusive top-level flags — one must be given. Parsed
@@ -30,7 +30,7 @@ pub const DEFAULT_UDP_LEN: u32 = 1460;
 pub const DEFAULT_UDP_BANDWIDTH_BPS: u64 = 1_000_000;
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
-#[command(name = "rperf", version, about = "Rust iPerf3-compatible client/server")]
+#[command(name = "rperf3", version, about = "rPerf3 — a Rust iPerf3-compatible client/server")]
 #[command(group(
     ArgGroup::new("mode")
         .required(true)
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn parses_full_client_flag_set() {
         let cli = Cli::try_parse_from([
-            "rperf", "-c", "127.0.0.1", "-p", "5202", "-t", "3", "-P", "2", "-l", "65536",
+            "rperf3", "-c", "127.0.0.1", "-p", "5202", "-t", "3", "-P", "2", "-l", "65536",
         ])
         .expect("parse");
 
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn applies_defaults_when_only_host_given() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "example.com"]).expect("parse");
+        let cli = Cli::try_parse_from(["rperf3", "-c", "example.com"]).expect("parse");
         assert_eq!(cli.port, DEFAULT_PORT);
         assert_eq!(cli.time, DEFAULT_TIME_SECS);
         assert_eq!(cli.parallel, DEFAULT_PARALLEL);
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn udp_default_len_is_sub_mtu() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => assert_eq!(cfg.len, DEFAULT_UDP_LEN),
             _ => panic!("expected client"),
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn tcp_default_len_is_iperf3_tcp_default() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => assert_eq!(cfg.len, DEFAULT_TCP_LEN as u32),
             _ => panic!("expected client"),
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn parses_server_only_mode() {
-        let cli = Cli::try_parse_from(["rperf", "-s"]).expect("parse");
+        let cli = Cli::try_parse_from(["rperf3", "-s"]).expect("parse");
         assert!(cli.server);
         assert_eq!(cli.host, None);
         assert_eq!(cli.port, DEFAULT_PORT);
@@ -174,25 +174,25 @@ mod tests {
 
     #[test]
     fn parses_server_with_port() {
-        let cli = Cli::try_parse_from(["rperf", "-s", "-p", "5202"]).expect("parse");
+        let cli = Cli::try_parse_from(["rperf3", "-s", "-p", "5202"]).expect("parse");
         assert!(cli.server);
         assert_eq!(cli.port, 5202);
     }
 
     #[test]
     fn server_and_client_conflict() {
-        let err = Cli::try_parse_from(["rperf", "-s", "-c", "1.2.3.4"]).unwrap_err();
+        let err = Cli::try_parse_from(["rperf3", "-s", "-c", "1.2.3.4"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
     fn missing_both_server_and_client_is_error() {
-        assert!(Cli::try_parse_from(["rperf"]).is_err());
+        assert!(Cli::try_parse_from(["rperf3"]).is_err());
     }
 
     #[test]
     fn client_mode_uses_host() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "10.0.0.1", "-p", "5202"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "10.0.0.1", "-p", "5202"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => {
                 assert_eq!(cfg.host, "10.0.0.1");
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn server_mode_uses_default_bind() {
-        let cli = Cli::try_parse_from(["rperf", "-s", "-p", "5202"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-s", "-p", "5202"]).unwrap();
         match cli.into_mode() {
             Mode::Server(cfg) => {
                 assert_eq!(cfg.host, DEFAULT_BIND);
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn parses_udp_flag() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u"]).unwrap();
         assert!(cli.udp);
         match cli.into_mode() {
             Mode::Client(cfg) => {
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn parses_bandwidth_flag() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "100M"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u", "-b", "100M"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 100_000_000),
             _ => panic!("expected client"),
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn bandwidth_zero_is_unlimited() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "0"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u", "-b", "0"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 0),
             _ => panic!("expected client"),
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn tcp_default_bandwidth_is_zero() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h"]).unwrap();
         match cli.into_mode() {
             Mode::Client(cfg) => {
                 assert_eq!(cfg.transport, crate::common::TransportKind::Tcp);
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn invalid_bandwidth_errors_on_try_into_mode() {
-        let cli = Cli::try_parse_from(["rperf", "-c", "h", "-b", "garbage"]).unwrap();
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-b", "garbage"]).unwrap();
         assert!(cli.try_into_mode().is_err());
     }
 }

@@ -1,4 +1,4 @@
-//! Which transport a rperf test uses for its data streams. Control
+//! Which transport a rPerf3 test uses for its data streams. Control
 //! channel is always TCP.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

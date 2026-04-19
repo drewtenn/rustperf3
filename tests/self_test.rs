@@ -1,5 +1,5 @@
-//! End-to-end self-test: spin up an rperf server on an ephemeral
-//! loopback port and run an rperf client against it in the same
+//! End-to-end self-test: spin up an rPerf3 server on an ephemeral
+//! loopback port and run an rPerf3 client against it in the same
 //! process. Asserts that data flows and the server reports a non-zero
 //! byte count after a short test window.
 
@@ -8,7 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rperf::Config;
+use rperf3::Config;
 
 /// Minimum bytes we expect to see over loopback in one second with a
 /// 128 KiB send size. Loopback typically moves gigabits per second even
@@ -22,7 +22,7 @@ fn self_test_loopback_tcp_short_run() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let port = listener.local_addr().expect("local_addr").port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
 
     let client_cfg = Config {
         host: "127.0.0.1".to_string(),
@@ -31,7 +31,7 @@ fn self_test_loopback_tcp_short_run() {
         parallel: 1,
         len: 131_072,
         omit: 0,
-        transport: rperf::TransportKind::Tcp,
+        transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
     };
 
@@ -40,7 +40,7 @@ fn self_test_loopback_tcp_short_run() {
     // more about letting the spawned thread schedule than correctness.
     thread::sleep(Duration::from_millis(50));
 
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let total_bytes = server
         .join()
@@ -62,7 +62,7 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let port = listener.local_addr().expect("local_addr").port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
 
     let client_cfg = Config {
         host: "127.0.0.1".to_string(),
@@ -71,12 +71,12 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         parallel: 1,
         len: 131_072,
         omit: 1,
-        transport: rperf::TransportKind::Tcp,
+        transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
     };
 
     thread::sleep(Duration::from_millis(50));
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let total = server
         .join()
@@ -101,7 +101,7 @@ fn server_times_out_when_client_goes_silent_after_cookie() {
 
     let handshake_timeout = Duration::from_millis(150);
     let server = thread::spawn(move || {
-        rperf::run_server_on_timeout(listener, Some(handshake_timeout))
+        rperf3::run_server_on_timeout(listener, Some(handshake_timeout))
     });
 
     // Let the server reach listener.accept().
@@ -132,23 +132,23 @@ fn self_test_loopback_udp_short_run() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let port = listener.local_addr().expect("local_addr").port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
 
     // 10 Mbps target, 1400-byte datagrams → ~892 packets/s expected.
     const PACKET_SIZE: u64 = 1400;
-    let client_cfg = rperf::Config {
+    let client_cfg = rperf3::Config {
         host: "127.0.0.1".to_string(),
         port,
         time: 1,
         parallel: 1,
         len: PACKET_SIZE as u32,
         omit: 0,
-        transport: rperf::TransportKind::Udp,
+        transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
     };
 
     thread::sleep(Duration::from_millis(50));
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let total_bytes = server
         .join()

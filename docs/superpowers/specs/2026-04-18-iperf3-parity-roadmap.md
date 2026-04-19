@@ -2,11 +2,11 @@
 
 **Date:** 2026-04-18
 **Status:** Design — approved through Section A; Sections B–H presented in auto mode.
-**Scope:** Drive `rperf` from its current TCP-only MVP to full feature parity with real `iperf3`, preserving strict bidirectional wire-level interop.
+**Scope:** Drive `rPerf3` from its current TCP-only MVP to full feature parity with real `iperf3`, preserving strict bidirectional wire-level interop.
 
 ## Goal
 
-`rperf` today implements iperf3's TCP data path and control-channel state machine well enough for loopback self-tests and both-directions interop against real `iperf3`. This roadmap takes it to feature parity:
+`rPerf3` today implements iperf3's TCP data path and control-channel state machine well enough for loopback self-tests and both-directions interop against real `iperf3`. This roadmap takes it to feature parity:
 
 - Full UDP data path (jitter, loss, OOO).
 - Reverse and bidirectional tests.
@@ -36,7 +36,7 @@ Interop bar is deliberate: **strict wire compatibility with real iperf3 for ever
 - **Interop:** wire-format compatibility with real iperf3 in both directions is a hard requirement.
 - **Module structure:** new protocol-specific code goes in new files under `src/common/` (`udp.rs`, `output/*.rs`, etc.). The existing `Socket` trait in `protocol.rs` extends to cover UDP rather than being duplicated.
 - **Wire-compat test:** a golden-file test (`tests/wire_golden.rs`) captures the serialized bytes of every `Message` variant plus `ClientOptions` and `Results`, so any refactor that silently drifts from iperf3's format is caught.
-- **Cross-interop tests:** each sub-project ships a `tests/cross_interop_<feature>.rs` that spawns the real `iperf3` binary, runs rperf-client↔iperf3-server and iperf3-client↔rperf-server, and skips gracefully with a `println!` when `iperf3` is not on `PATH`.
+- **Cross-interop tests:** each sub-project ships a `tests/cross_interop_<feature>.rs` that spawns the real `iperf3` binary, runs rPerf3-client↔iperf3-server and iperf3-client↔rPerf3-server, and skips gracefully with a `println!` when `iperf3` is not on `PATH`.
 - **Error handling:** current `Box<dyn Error>` pattern continues; no migration to `anyhow`/`thiserror`.
 
 ## Out of scope for this roadmap
@@ -90,7 +90,7 @@ Token bucket. At each send site: compute `expected_bytes_by_now = rate * elapsed
 **Tests:**
 
 - `tests/self_test.rs` grows a UDP loopback case (asserts jitter ≥ 0, OOO = 0 on loopback, lost = 0 on loopback).
-- `tests/cross_interop_udp.rs` — iperf3-client↔rperf-server and rperf-client↔iperf3-server UDP, both at `-b 100M`, assert exit 0 and that both sides report nonzero throughput, ≤ expected loss.
+- `tests/cross_interop_udp.rs` — iperf3-client↔rPerf3-server and rPerf3-client↔iperf3-server UDP, both at `-b 100M`, assert exit 0 and that both sides report nonzero throughput, ≤ expected loss.
 
 ---
 
@@ -118,7 +118,7 @@ Token bucket. At each send site: compute `expected_bytes_by_now = rate * elapsed
 
 ## Sub-project 3 — Concurrent tests on server
 
-**CLI additions:** `-1` (iperf3-compat: server exits after one test); `--max-concurrent N` (rperf extension; default unlimited).
+**CLI additions:** `-1` (iperf3-compat: server exits after one test); `--max-concurrent N` (rPerf3 extension; default unlimited).
 
 **Approach:** sessions share the single listen port. Data streams demultiplex by cookie (already supported by `cookie.rs`). Remove the "one test at a time" guard in `server.rs`.
 
@@ -135,7 +135,7 @@ Token bucket. At each send site: compute `expected_bytes_by_now = rate * elapsed
 **Tests:**
 
 - Self-test: spin up server, fire five concurrent clients, assert all five complete with distinct receipts.
-- Cross-interop: run rperf-server with three concurrent iperf3-clients; assert all three succeed.
+- Cross-interop: run rPerf3-server with three concurrent iperf3-clients; assert all three succeed.
 - Back-pressure test: `--max-concurrent 1`, second client gets "the server is busy".
 
 ---
@@ -148,7 +148,7 @@ Token bucket. At each send site: compute `expected_bytes_by_now = rate * elapsed
 
 Every `println!` in `client.rs` and `server.rs` migrates to a reporter call. The reporter owns `--logfile` redirection and `--timestamps` prefixing.
 
-**Parity testing:** capture real iperf3's JSON output for a known-good run; golden-file diff rperf's JSON structurally (field presence and types, not exact values — throughput varies run to run).
+**Parity testing:** capture real iperf3's JSON output for a known-good run; golden-file diff rPerf3's JSON structurally (field presence and types, not exact values — throughput varies run to run).
 
 **Components:**
 
@@ -212,7 +212,7 @@ Non-Linux: platform-gated behavior. Unsupported flags either refuse with a clear
 **Tests:**
 
 - Round-trip unit test with a fixture keypair: encrypt → decrypt → validate.
-- Cross-interop: generate a test keypair, authenticate rperf-client to real iperf3-server and iperf3-client to rperf-server.
+- Cross-interop: generate a test keypair, authenticate rPerf3-client to real iperf3-server and iperf3-client to rPerf3-server.
 - Negative tests: bad password, stale timestamp, unknown user.
 
 ---

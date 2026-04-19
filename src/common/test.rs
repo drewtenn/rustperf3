@@ -80,7 +80,7 @@ impl ClientStreamReceipt {
 	}
 }
 
-/// Runtime configuration for a single rperf test.
+/// Runtime configuration for a single rPerf3 test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
 	pub host: String,

@@ -259,7 +259,7 @@ fn run_udp_branch(
 }
 
 /// Send DisplayResults and block until the client signals it's done.
-/// rperf clients send IperfDone; iperf3 3.21 clients send ClientTerminate
+/// rPerf3 clients send IperfDone; iperf3 3.21 clients send ClientTerminate
 /// (and close the socket) — both mean the same thing here.
 pub fn finalize_test(control: &mut Protocol) -> io::Result<()> {
     send_control_byte(control.transfer.as_mut(), Message::DisplayResults)?;

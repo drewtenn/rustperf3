@@ -74,7 +74,7 @@ impl Stream {
         let len = test.config.len as usize;
         // Total wall-clock budget for this stream = omit + time. iPerf3
         // treats omit as *additional* seconds on top of the measurement
-        // window; rperf does the same so cfg.time always reflects the
+        // window; rPerf3 does the same so cfg.time always reflects the
         // reported number.
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let omit = Duration::from_secs(test.config.omit as u64);

@@ -1,11 +1,11 @@
 //! Cross-iperf3 TCP interop. Skips when the `iperf3` binary is not on
-//! PATH; otherwise runs rperf client ↔ real iperf3 server.
+//! PATH; otherwise runs rPerf3 client ↔ real iperf3 server.
 //!
 //! Exists specifically as a regression guard for the ClientOptions JSON
 //! shape — iperf3 3.21 is sensitive to unexpected fields in the options
 //! payload and deadlocks at CreateStreams if they're present.
 //!
-//! The reverse direction (iperf3 client → rperf server) is gated behind
+//! The reverse direction (iperf3 client → rPerf3 server) is gated behind
 //! `#[ignore]` for now: data flows correctly end-to-end, but iperf3 3.21
 //! TCP clients do not send TEST_END to our server after their `-t`
 //! timer, so the test would hang on `server.join()`. Closing that gap
@@ -28,7 +28,7 @@ fn iperf3_available() -> bool {
 }
 
 #[test]
-fn rperf_client_talks_to_iperf3_server_tcp() {
+fn rperf3_client_talks_to_iperf3_server_tcp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -47,17 +47,17 @@ fn rperf_client_talks_to_iperf3_server_tcp() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let client_cfg = rperf::Config {
+    let client_cfg = rperf3::Config {
         host: "127.0.0.1".into(),
         port,
         time: 1,
         parallel: 1,
         len: 131_072,
         omit: 0,
-        transport: rperf::TransportKind::Tcp,
+        transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
     };
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let output = iperf3_server.wait_with_output().expect("wait iperf3");
     assert!(output.status.success(), "iperf3 server failed: {:?}", output);
@@ -81,7 +81,7 @@ fn rperf_client_talks_to_iperf3_server_tcp() {
 /// that's fixed.
 #[test]
 #[ignore]
-fn iperf3_client_talks_to_rperf_server_tcp() {
+fn iperf3_client_talks_to_rperf3_server_tcp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -90,7 +90,7 @@ fn iperf3_client_talks_to_rperf_server_tcp() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
     thread::sleep(Duration::from_millis(200));
 
     let iperf3_client = Command::new("iperf3")

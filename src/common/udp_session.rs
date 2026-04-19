@@ -43,7 +43,7 @@ pub fn bind_udp(addr: &str, handshake_timeout: Option<Duration>) -> io::Result<U
 /// the client considers stream setup to have failed and immediately
 /// terminates the test.
 ///
-/// When using rperf as the client, the client sends the 37-byte session
+/// When using rPerf3 as the client, the client sends the 37-byte session
 /// cookie instead.  Both formats are accepted here: any datagram whose
 /// source address has not been seen before is treated as a stream-init
 /// and acknowledged with `b"6789"`.
@@ -56,7 +56,7 @@ pub fn accept_udp_streams(
     let mut buf = [0u8; 65_536];
     for _ in 0..n {
         let (_len, src) = socket.recv_from(&mut buf)?;
-        // Reply with the iperf3 stream-init acknowledgment.  rperf clients
+        // Reply with the iperf3 stream-init acknowledgment.  rPerf3 clients
         // ignore this extra datagram; iperf3 clients require it to proceed.
         let _ = socket.send_to(UDP_STREAM_ACK, src);
         addrs.push(src);
@@ -215,7 +215,7 @@ mod tests {
         assert!(socket.local_addr().is_ok());
     }
 
-    /// Verify that accept_udp_streams accepts any datagram (rperf-style
+    /// Verify that accept_udp_streams accepts any datagram (rPerf3-style
     /// 37-byte cookie) and replies with the iperf3 acknowledgment `b"6789"`.
     #[test]
     fn accept_udp_streams_accepts_rperf_cookie_and_replies_ack() {

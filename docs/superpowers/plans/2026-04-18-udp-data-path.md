@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add full iperf3-compatible UDP data-path support to rperf (client and server), including jitter/loss/out-of-order accounting, the `-u` and `-b` CLI flags, bandwidth pacing, and cross-iperf3 interop.
+**Goal:** Add full iperf3-compatible UDP data-path support to rPerf3 (client and server), including jitter/loss/out-of-order accounting, the `-u` and `-b` CLI flags, bandwidth pacing, and cross-iperf3 interop.
 
 **Architecture:** UDP uses the existing TCP control channel unchanged. `ClientOptions` grows `udp: bool` and `bandwidth: u64` so the server branches on protocol at CreateStreams time. Client-side, each parallel stream opens a connected UDP socket, sends the 37-byte cookie as the first datagram, then sends 16-byte-headered datagrams paced by a token bucket. Server-side, one UDP socket is bound to the test port; a demux loop keys per-stream state by source `SocketAddr`. Test termination uses a negative-seq sentinel datagram per stream plus the existing `TestEnd` control byte. No async — everything runs on `std::thread` to match the established pattern.
 
@@ -72,7 +72,7 @@ fn options_udp_roundtrip() {
 
 #[test]
 fn options_parses_legacy_payload_without_udp_or_bandwidth() {
-    // Shape of a ClientOptions from a rperf version that predates UDP.
+    // Shape of a ClientOptions from a rPerf3 version that predates UDP.
     let legacy = r#"{"tcp":true,"omit":0,"time":5,"parallel":1,"len":131072,"client_version":"3.1.3"}"#;
     let opts: ClientOptions = serde_json::from_str(legacy).expect("parse legacy");
     assert_eq!(opts.udp, false);
@@ -601,7 +601,7 @@ git commit -m "bandwidth: iperf3 -b string parser (K/M/G suffixes)"
 Create `src/common/transport_kind.rs`:
 
 ```rust
-//! Which transport a rperf test uses for its data streams. Control
+//! Which transport a rPerf3 test uses for its data streams. Control
 //! channel is always TCP.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -728,7 +728,7 @@ impl Config {
 
 Edit `src/common/test.rs` — in the existing `config_host_port_formats_correctly` test, add `transport: TransportKind::Tcp, bandwidth: 0,` to the struct literal.
 
-Edit `tests/self_test.rs` — in both `Config { ... }` literals (the 1-second TCP test and the omit test), add `transport: rperf::TransportKind::Tcp, bandwidth: 0,`. This requires `rperf::TransportKind` to be exported.
+Edit `tests/self_test.rs` — in both `Config { ... }` literals (the 1-second TCP test and the omit test), add `transport: rperf3::TransportKind::Tcp, bandwidth: 0,`. This requires `rperf3::TransportKind` to be exported.
 
 - [ ] **Step 5: Re-export `TransportKind` from the crate root**
 
@@ -768,7 +768,7 @@ Append to `src/cli.rs` tests module:
 ```rust
 #[test]
 fn parses_udp_flag() {
-    let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u"]).unwrap();
+    let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u"]).unwrap();
     assert!(cli.udp);
     match cli.into_mode() {
         Mode::Client(cfg) => {
@@ -782,7 +782,7 @@ fn parses_udp_flag() {
 
 #[test]
 fn parses_bandwidth_flag() {
-    let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "100M"]).unwrap();
+    let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u", "-b", "100M"]).unwrap();
     match cli.into_mode() {
         Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 100_000_000),
         _ => panic!("expected client"),
@@ -791,7 +791,7 @@ fn parses_bandwidth_flag() {
 
 #[test]
 fn bandwidth_zero_is_unlimited() {
-    let cli = Cli::try_parse_from(["rperf", "-c", "h", "-u", "-b", "0"]).unwrap();
+    let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-u", "-b", "0"]).unwrap();
     match cli.into_mode() {
         Mode::Client(cfg) => assert_eq!(cfg.bandwidth, 0),
         _ => panic!("expected client"),
@@ -800,7 +800,7 @@ fn bandwidth_zero_is_unlimited() {
 
 #[test]
 fn tcp_default_bandwidth_is_zero() {
-    let cli = Cli::try_parse_from(["rperf", "-c", "h"]).unwrap();
+    let cli = Cli::try_parse_from(["rperf3", "-c", "h"]).unwrap();
     match cli.into_mode() {
         Mode::Client(cfg) => {
             assert_eq!(cfg.transport, crate::common::TransportKind::Tcp);
@@ -812,7 +812,7 @@ fn tcp_default_bandwidth_is_zero() {
 
 #[test]
 fn invalid_bandwidth_errors_on_into_mode() {
-    let cli = Cli::try_parse_from(["rperf", "-c", "h", "-b", "garbage"]).unwrap();
+    let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-b", "garbage"]).unwrap();
     // into_mode should propagate the parse error (via panic or Result — we choose Result).
     assert!(cli.try_into_mode().is_err());
 }
@@ -1941,21 +1941,21 @@ fn self_test_loopback_udp_short_run() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let port = listener.local_addr().expect("local_addr").port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
 
-    let client_cfg = rperf::Config {
+    let client_cfg = rperf3::Config {
         host: "127.0.0.1".to_string(),
         port,
         time: 1,
         parallel: 1,
         len: 1400, // typical MTU-ish UDP payload
         omit: 0,
-        transport: rperf::TransportKind::Udp,
+        transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000, // 10 Mbps
     };
 
     thread::sleep(Duration::from_millis(50));
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let total_bytes = server
         .join()
@@ -1991,7 +1991,7 @@ git commit -m "self_test: UDP loopback short run"
 **Files:**
 - Create: `tests/cross_interop_udp.rs`
 
-**Context:** Spawns the real `iperf3` binary. Skips with a printed message when `iperf3` is not on PATH (so contributors without it aren't blocked). Runs both directions: rperf-client↔iperf3-server and iperf3-client↔rperf-server, in UDP mode at 10 Mbps for 1 second. Asserts exit code 0 for the external side and that our side reports data flowed.
+**Context:** Spawns the real `iperf3` binary. Skips with a printed message when `iperf3` is not on PATH (so contributors without it aren't blocked). Runs both directions: rPerf3-client↔iperf3-server and iperf3-client↔rPerf3-server, in UDP mode at 10 Mbps for 1 second. Asserts exit code 0 for the external side and that our side reports data flowed.
 
 - [ ] **Step 1: Create the test file**
 
@@ -1999,7 +1999,7 @@ Create `tests/cross_interop_udp.rs`:
 
 ```rust
 //! Cross-iperf3 UDP interop. Skips when the `iperf3` binary is not on
-//! PATH; otherwise runs rperf↔iperf3 in both directions.
+//! PATH; otherwise runs rPerf3↔iperf3 in both directions.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -2018,7 +2018,7 @@ fn iperf3_available() -> bool {
 }
 
 #[test]
-fn rperf_client_talks_to_iperf3_server_udp() {
+fn rperf3_client_talks_to_iperf3_server_udp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -2039,17 +2039,17 @@ fn rperf_client_talks_to_iperf3_server_udp() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let client_cfg = rperf::Config {
+    let client_cfg = rperf3::Config {
         host: "127.0.0.1".into(),
         port,
         time: 1,
         parallel: 1,
         len: 1400,
         omit: 0,
-        transport: rperf::TransportKind::Udp,
+        transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
     };
-    rperf::run_client(client_cfg);
+    rperf3::run_client(client_cfg);
 
     let output = iperf3_server.wait_with_output().expect("wait iperf3");
     assert!(output.status.success(), "iperf3 server failed: {:?}", output);
@@ -2059,7 +2059,7 @@ fn rperf_client_talks_to_iperf3_server_udp() {
 }
 
 #[test]
-fn iperf3_client_talks_to_rperf_server_udp() {
+fn iperf3_client_talks_to_rperf3_server_udp() {
     if !iperf3_available() {
         println!("skipping cross-interop: iperf3 not on PATH");
         return;
@@ -2068,7 +2068,7 @@ fn iperf3_client_talks_to_rperf_server_udp() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
 
-    let server = thread::spawn(move || rperf::run_server_on(listener));
+    let server = thread::spawn(move || rperf3::run_server_on(listener));
     thread::sleep(Duration::from_millis(200));
 
     let mut iperf3_client = Command::new("iperf3")
@@ -2154,11 +2154,11 @@ cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 100M -t 3
 - [ ] **Step 5: Add a UDP example under "Test against real iPerf3"**
 
 ```
-# rperf client -> iperf3 server (UDP)
+# rPerf3 client -> iperf3 server (UDP)
 iperf3 -s -p 5202
 cargo run --release -- -c 127.0.0.1 -p 5202 -u -b 50M -t 3
 
-# iperf3 client -> rperf server (UDP)
+# iperf3 client -> rPerf3 server (UDP)
 cargo run --release -- -s -p 5202
 iperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3
 ```
@@ -2206,9 +2206,9 @@ When this plan is complete:
 
 1. `cargo test --all-targets` is green.
 2. `cargo clippy --all-targets -- -D warnings` is clean.
-3. `rperf -s -p 5202` followed by `rperf -c 127.0.0.1 -p 5202 -u -b 50M -t 3` reports non-zero throughput, non-zero packets, near-zero loss/OOO on loopback.
-4. `iperf3 -s -p 5202` + `rperf -c 127.0.0.1 -p 5202 -u -b 50M -t 3` interoperates (both sides report the same rough throughput).
-5. `rperf -s -p 5202` + `iperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3` interoperates.
+3. `rperf3 -s -p 5202` followed by `rperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3` reports non-zero throughput, non-zero packets, near-zero loss/OOO on loopback.
+4. `iperf3 -s -p 5202` + `rperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3` interoperates (both sides report the same rough throughput).
+5. `rperf3 -s -p 5202` + `iperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3` interoperates.
 6. README documents `-u` and `-b`; "Out of scope" no longer lists UDP.
 
 When those are all true, sub-project #1 is done. The next sub-project (reverse + bidirectional) can begin per the roadmap at [docs/superpowers/specs/2026-04-18-iperf3-parity-roadmap.md](../specs/2026-04-18-iperf3-parity-roadmap.md).
