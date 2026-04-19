@@ -51,7 +51,9 @@ fn client_loop(test: &mut Test) {
             match message {
                 Message::TestEnd => {
                     streams_finished += 1;
-                    if streams_finished >= test.config.parallel.max(1) && !test_end_sent {
+                    let expected_streams = test.config.parallel.max(1)
+                        * if test.config.direction.is_bidirectional() { 2 } else { 1 };
+                    if streams_finished >= expected_streams && !test_end_sent {
                         if let Some(protocol) = test.control_channel.as_mut() {
                             log_send(
                                 wire::send_control_byte(
@@ -150,9 +152,18 @@ fn exchange_results(test: &mut Test) {
     let sender_secs = sender_duration.as_secs_f64();
     let retransmits: u64 = test.receipts.iter().map(|r| r.retransmits as u64).sum();
 
+    let dir = test.config.direction;
+    let client_role = if dir.is_bidirectional() {
+        "sender"
+    } else if dir.is_reverse() {
+        "receiver"
+    } else {
+        "sender"
+    };
     println!(
-        "{}  sender",
+        "{}  {}",
         stream::format_interval_row(1, 0.0, sender_secs, sender_bytes),
+        client_role,
     );
 
     // Server-side receiver row comes from the exchanged Results payload.
@@ -171,12 +182,20 @@ fn exchange_results(test: &mut Test) {
         return;
     }
 
+    let server_role = if dir.is_bidirectional() {
+        "receiver"
+    } else if dir.is_reverse() {
+        "sender"
+    } else {
+        "receiver"
+    };
     match recv_framed_json::<Results>(protocol.transfer.as_mut()) {
         Ok(server) => {
             let bytes = server.streams.iter().map(|s| s.bytes).sum::<u64>();
             println!(
-                "{}  receiver",
+                "{}  {}",
                 stream::format_interval_row(1, 0.0, sender_secs, bytes),
+                server_role,
             );
         }
         Err(e) => eprintln!("could not receive/parse server results: {:?}", e),
@@ -261,11 +280,22 @@ pub fn client_measured_duration(
 fn create_streams(test: &Test) {
     let host = test.config.host_port();
     let n = test.config.parallel.max(1);
+    let is_udp = test.config.transport.is_udp();
+    let dir = test.config.direction;
     for stream_id in 1..=n {
-        if test.config.transport.is_udp() {
-            Stream::start_udp(test, host.clone(), test.cookie, stream_id);
-        } else {
-            Stream::start(test, host.clone(), test.cookie, stream_id);
+        if dir.client_sends() {
+            if is_udp {
+                Stream::start_udp(test, host.clone(), test.cookie, stream_id);
+            } else {
+                Stream::start(test, host.clone(), test.cookie, stream_id);
+            }
+        }
+        if dir.client_receives() {
+            if is_udp {
+                Stream::start_udp_recv(test, host.clone(), test.cookie, stream_id);
+            } else {
+                Stream::start_recv(test, host.clone(), test.cookie, stream_id);
+            }
         }
     }
 }
@@ -293,6 +323,8 @@ fn send_options(test: &mut Test) {
     if options.udp {
         options.tcp = false;
     }
+    options.reverse = test.config.direction.is_reverse();
+    options.bidirectional = test.config.direction.is_bidirectional();
     if let Err(e) = send_framed_json(protocol.transfer.as_mut(), &options) {
         eprintln!("failed to send options: {:?}", e);
     }

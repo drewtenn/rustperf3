@@ -216,9 +216,112 @@ fn run_tcp_branch(
     control.transfer.set_read_timeout(run_timeout)?;
 
     let omit_window = Duration::from_secs(opts.omit as u64);
-    let handles = spawn_stream_readers(streams, omit_window);
-    wait_for_test_end(control)?;
-    Ok(join_stream_totals(handles))
+    let receipts = if opts.bidirectional {
+        // Split each stream into a send half and a receive half via
+        // try_clone on the underlying TcpStream (full-duplex).
+        let mut send_protos = Vec::with_capacity(streams.len());
+        let mut recv_protos = Vec::with_capacity(streams.len());
+        for proto in streams {
+            let cloned = match proto.transfer.try_clone_tcp() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("bidir clone failed: {:?}", e);
+                    return Err(e);
+                }
+            };
+            send_protos.push(Protocol { transfer: cloned });
+            recv_protos.push(proto);
+        }
+        let send_opts = opts.clone();
+        let send_handle =
+            std::thread::spawn(move || run_tcp_send_streams(send_protos, &send_opts));
+        // Receive side drains inbound bytes concurrently.
+        let handles = spawn_stream_readers(recv_protos, omit_window);
+        wait_for_test_end(control)?;
+        let mut receipts = join_stream_totals(handles);
+        receipts.extend(send_handle.join().unwrap_or_default());
+        receipts
+    } else if opts.reverse {
+        // Server is sender. Join all sender threads ourselves; the client
+        // will send TestEnd when its receive duration elapses, so we still
+        // wait_for_test_end on the control channel afterwards (non-blocking
+        // on the reverse side — if it arrives first, great; if not, we
+        // still see it after sending completes).
+        let r = run_tcp_send_streams(streams, opts);
+        // Best-effort: peek for TEST_END on control so finalize_test below
+        // works. Ignored errors — client may have half-closed already.
+        let _ = wait_for_test_end(control);
+        r
+    } else {
+        let handles = spawn_stream_readers(streams, omit_window);
+        wait_for_test_end(control)?;
+        join_stream_totals(handles)
+    };
+    Ok(receipts)
+}
+
+fn run_tcp_send_streams(
+    streams: Vec<Protocol>,
+    opts: &ClientOptions,
+) -> Vec<StreamReceipt> {
+    use crate::common::stream::{build_payload, format_interval_row};
+    use crate::common::timer::Timer;
+
+    let duration = Duration::from_secs((opts.time + opts.omit) as u64);
+    let omit = Duration::from_secs(opts.omit as u64);
+    let len = opts.len as usize;
+
+    let handles: Vec<_> = streams
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut proto)| {
+            let stream_id = (i + 1) as u32;
+            std::thread::spawn(move || {
+                let _ = proto.transfer.set_nonblocking(false);
+                let mut receipt = StreamReceipt::empty();
+                let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
+                let timer = Timer::new();
+                let buf = build_payload(len);
+                while !timer.is_elapsed(duration) {
+                    match proto.transfer.send(&buf) {
+                        Ok(n) if n > 0 => {
+                            let now = Instant::now();
+                            if receipt.first_byte_at.is_none() {
+                                receipt.first_byte_at = Some(now);
+                            }
+                            receipt.last_byte_at = Some(now);
+                            receipt.bytes += n as u64;
+                            let first = receipt.first_byte_at.expect("set");
+                            if now.duration_since(first) < omit {
+                                receipt.bytes_omit += n as u64;
+                            } else if receipt.first_measured_at.is_none() {
+                                receipt.first_measured_at = Some(now);
+                            }
+                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                println!(
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
+                                );
+                            }
+                        }
+                        Ok(_) => continue,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                        Err(_) => break,
+                    }
+                }
+                receipt
+            })
+        })
+        .collect();
+    handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or_else(|_| StreamReceipt::empty()))
+        .collect()
 }
 
 fn run_udp_branch(
@@ -244,18 +347,144 @@ fn run_udp_branch(
         .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
     control.transfer.set_read_timeout(run_timeout)?;
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let receiver_stop = stop.clone();
-    let omit_window = Duration::from_secs(opts.omit as u64);
-    let handle = std::thread::spawn(move || {
-        run_udp_receiver(udp, addrs, omit_window, receiver_stop)
-    });
-
-    wait_for_test_end(control)?;
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-
-    let receipts = handle.join().unwrap_or_default();
+    let receipts = if opts.bidirectional {
+        // Spawn both sender and receiver on cloned sockets.
+        let send_socket = udp.try_clone()?;
+        let recv_socket = udp;
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiver_stop = stop.clone();
+        let omit_window = Duration::from_secs(opts.omit as u64);
+        let recv_addrs = addrs.clone();
+        let recv_handle = std::thread::spawn(move || {
+            run_udp_receiver(recv_socket, recv_addrs, omit_window, receiver_stop)
+        });
+        // Sender runs on this thread and returns its own receipts.
+        let mut send_receipts = run_udp_send_streams(send_socket, addrs, opts);
+        // Best-effort TestEnd; then stop the receiver.
+        let _ = wait_for_test_end(control);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut recv_receipts = recv_handle.join().unwrap_or_default();
+        send_receipts.append(&mut recv_receipts);
+        send_receipts
+    } else if opts.reverse {
+        run_udp_send_streams(udp, addrs, opts)
+    } else {
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiver_stop = stop.clone();
+        let omit_window = Duration::from_secs(opts.omit as u64);
+        let handle = std::thread::spawn(move || {
+            run_udp_receiver(udp, addrs, omit_window, receiver_stop)
+        });
+        wait_for_test_end(control)?;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.join().unwrap_or_default()
+    };
+    // For reverse: best-effort read of client's TestEnd on control channel.
+    if opts.reverse {
+        let _ = wait_for_test_end(control);
+    }
     Ok(receipts)
+}
+
+fn run_udp_send_streams(
+    socket: std::net::UdpSocket,
+    addrs: Vec<std::net::SocketAddr>,
+    opts: &ClientOptions,
+) -> Vec<StreamReceipt> {
+    use crate::common::pacing::TokenBucket;
+    use crate::common::stream::format_interval_row;
+    use crate::common::timer::Timer;
+    use crate::common::udp_header::{UdpHeader, UDP_HEADER_LEN};
+
+    let duration = Duration::from_secs((opts.time + opts.omit) as u64);
+    let omit = Duration::from_secs(opts.omit as u64);
+    let len = (opts.len as usize).max(UDP_HEADER_LEN);
+    let bandwidth = opts.bandwidth;
+
+    let handles: Vec<_> = addrs
+        .into_iter()
+        .enumerate()
+        .map(|(i, peer)| {
+            let stream_id = (i + 1) as u32;
+            let sock = socket.try_clone().expect("udp try_clone");
+            std::thread::spawn(move || {
+                let mut receipt = StreamReceipt::empty();
+                let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
+                let timer = Timer::new();
+                let mut bucket = TokenBucket::new(bandwidth, Instant::now());
+                let mut seq: i64 = 0;
+                let mut packet = vec![1u8; len];
+                while !timer.is_elapsed(duration) {
+                    let now = Instant::now();
+                    if let Some(wait) = bucket.wait(now) {
+                        std::thread::sleep(wait);
+                        continue;
+                    }
+                    let epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default();
+                    let hdr = UdpHeader {
+                        tv_sec: epoch.as_secs() as u32,
+                        tv_usec: epoch.subsec_micros(),
+                        seq,
+                    };
+                    if hdr.encode(&mut packet[..UDP_HEADER_LEN]).is_err() {
+                        break;
+                    }
+                    match sock.send_to(&packet, peer) {
+                        Ok(n) if n > 0 => {
+                            bucket.record(n as u64);
+                            let now = Instant::now();
+                            if receipt.first_byte_at.is_none() {
+                                receipt.first_byte_at = Some(now);
+                            }
+                            receipt.last_byte_at = Some(now);
+                            receipt.bytes += n as u64;
+                            receipt.packets += 1;
+                            seq += 1;
+                            let first = receipt.first_byte_at.expect("set");
+                            if now.duration_since(first) < omit {
+                                receipt.bytes_omit += n as u64;
+                            } else if receipt.first_measured_at.is_none() {
+                                receipt.first_measured_at = Some(now);
+                            }
+                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                println!(
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
+                                );
+                            }
+                        }
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+                // Sentinel
+                let epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let sentinel = UdpHeader {
+                    tv_sec: epoch.as_secs() as u32,
+                    tv_usec: epoch.subsec_micros(),
+                    seq: -1,
+                };
+                let mut fin = [0u8; UDP_HEADER_LEN];
+                if sentinel.encode(&mut fin).is_ok() {
+                    let _ = sock.send_to(&fin, peer);
+                }
+                receipt
+            })
+        })
+        .collect();
+    handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or_else(|_| StreamReceipt::empty()))
+        .collect()
 }
 
 /// Send DisplayResults and block until the client signals it's done.

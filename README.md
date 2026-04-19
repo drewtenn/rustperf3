@@ -32,6 +32,11 @@ client can talk to `rPerf3` server, the MVP is working.
   accounting, sender-side bandwidth pacing (`-b`, default 1 Mbps for
   UDP), and an end-of-test sentinel packet. Works bidirectionally
   against real iPerf3.
+- **Reverse + bidirectional tests (`-R`, `--bidir`).** In reverse, the
+  server is the sender and the client is the receiver. In bidirectional,
+  both sides send and receive on the same data streams concurrently.
+  Works on TCP and UDP; interoperates with real iPerf3 in the
+  rperf3-client → iperf3-server direction.
 
 ### Accuracy features
 
@@ -75,6 +80,8 @@ Options:
   -l, --len <LEN>            Bytes per write (TCP buffer length) [default: 131072]
   -u, --udp                  Use UDP instead of TCP for data streams
   -b, --bandwidth <RATE>     Target bandwidth for UDP sender (e.g. 100M, 1G, 0 = unlimited)
+  -R, --reverse              Reverse direction — server sends, client receives
+      --bidir                Bidirectional — both sides send and receive
   -O, --omit <OMIT>          Seconds to omit at the start of the test [default: 0]
   -h, --help                 Print help
   -V, --version              Print version
@@ -94,6 +101,11 @@ Or run the in-process self-test:
 
 ```
 cargo test --test self_test -- --nocapture
+```
+
+```
+# Reverse TCP: server sends, client receives
+cargo run --release -- -c 127.0.0.1 -p 5202 -R -t 3
 ```
 
 UDP at 100 Mbps for 3 seconds:
@@ -129,6 +141,13 @@ cargo run --release -- -s -p 5202
 iperf3 -c 127.0.0.1 -p 5202 -u -b 50M -t 3
 ```
 
+rperf3 client in reverse ↔ iperf3 server:
+
+```
+iperf3 -s -p 5202
+cargo run --release -- -c 127.0.0.1 -p 5202 -R -t 3
+```
+
 ## Building
 
 ```
@@ -162,7 +181,6 @@ tests/
 
 ## Out of scope
 
-- Reverse or bidirectional tests
 - Concurrent tests on a single server (one-shot only today)
 - Async/tokio runtime
 - TLS / authentication

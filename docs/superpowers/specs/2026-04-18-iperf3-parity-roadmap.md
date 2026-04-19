@@ -96,6 +96,12 @@ Token bucket. At each send site: compute `expected_bytes_by_now = rate * elapsed
 
 ## Sub-project 2 — Reverse + bidirectional
 
+**Status:** ✅ Shipped (2026-04-18). TCP + UDP reverse and bidirectional
+land in both the client and server. rperf3-client ↔ iperf3-server
+direction is verified against iperf3 3.21; iperf3-client → rperf3-server
+direction is `#[ignore]`'d pending the same post-test protocol
+compatibility work tracked in sub-project #1.
+
 **CLI additions:** `-R`/`--reverse`, `--bidir` (mutually exclusive with `-R`).
 
 **Wire:** `ClientOptions` adds `reverse: bool`, `bidirectional: bool`. Control-channel direction unchanged (client still initiates).

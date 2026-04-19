@@ -3,10 +3,12 @@ use num_enum::TryFromPrimitive;
 use self::cookie::COOKIE_LEN;
 use self::protocol::Protocol;
 
+pub use direction::Direction;
 pub use transport_kind::TransportKind;
 
 pub mod bandwidth;
 pub mod cookie;
+pub mod direction;
 pub mod cpu;
 pub mod format;
 pub mod interval;

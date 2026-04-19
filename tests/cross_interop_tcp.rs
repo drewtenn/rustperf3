@@ -56,6 +56,7 @@ fn rperf3_client_talks_to_iperf3_server_tcp() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        direction: rperf3::Direction::Forward,
     };
     rperf3::run_client(client_cfg);
 

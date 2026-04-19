@@ -9,7 +9,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::common::test::Config;
 use crate::common::wire::DEFAULT_TCP_LEN;
-use crate::common::{bandwidth, TransportKind};
+use crate::common::{bandwidth, Direction, TransportKind};
 
 /// Default iPerf3 control port.
 pub const DEFAULT_PORT: u16 = 5201;
@@ -76,6 +76,14 @@ pub struct Cli {
     /// or K/M/G suffixes. `0` = unlimited. Default: `1M` when `-u`, else `0`.
     #[arg(short = 'b', long = "bandwidth")]
     pub bandwidth: Option<String>,
+
+    /// Reverse the direction of the test. Server sends, client receives.
+    #[arg(short = 'R', long = "reverse", conflicts_with = "bidir")]
+    pub reverse: bool,
+
+    /// Run in bidirectional mode. Both sides send and receive simultaneously.
+    #[arg(long = "bidir")]
+    pub bidir: bool,
 }
 
 /// Result of a successful parse: either client or server mode, each
@@ -103,6 +111,14 @@ impl Cli {
         };
         let len = self.len.unwrap_or(if self.udp { DEFAULT_UDP_LEN } else { DEFAULT_TCP_LEN as u32 });
 
+        let direction = if self.bidir {
+            Direction::Bidirectional
+        } else if self.reverse {
+            Direction::Reverse
+        } else {
+            Direction::Forward
+        };
+
         let base = Config {
             host: self.host.clone().unwrap_or_else(|| DEFAULT_BIND.to_string()),
             port: self.port,
@@ -112,6 +128,7 @@ impl Cli {
             omit: self.omit,
             transport,
             bandwidth,
+            direction,
         };
         Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
     }
@@ -262,5 +279,38 @@ mod tests {
     fn invalid_bandwidth_errors_on_try_into_mode() {
         let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-b", "garbage"]).unwrap();
         assert!(cli.try_into_mode().is_err());
+    }
+
+    #[test]
+    fn parses_reverse_flag() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-R"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.direction, crate::common::Direction::Reverse),
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn parses_bidir_flag() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "--bidir"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.direction, crate::common::Direction::Bidirectional),
+            _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn reverse_and_bidir_conflict() {
+        let err = Cli::try_parse_from(["rperf3", "-c", "h", "-R", "--bidir"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn default_direction_is_forward() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h"]).unwrap();
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.direction, crate::common::Direction::Forward),
+            _ => panic!("expected client"),
+        }
     }
 }

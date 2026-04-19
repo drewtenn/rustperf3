@@ -270,6 +270,168 @@ impl Stream {
         });
     }
 
+    /// Client-side TCP receiver. Mirrors [`Stream::start`] but reads
+    /// from the data stream instead of sending. Used for `Reverse` and
+    /// (together with `start`) `Bidirectional`. The accumulator
+    /// `ClientStreamReceipt.bytes_sent` holds observed-bytes here — the
+    /// field is direction-agnostic on the client and we don't tag
+    /// receipts by role yet.
+    pub fn start_recv(test: &Test, host: String, cookie: [u8; COOKIE_LEN], stream_id: u32) {
+        let tx = test.tx_channel.clone();
+        let receipt_tx = test.receipt_tx.clone();
+        let omit = Duration::from_secs(test.config.omit as u64);
+        let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
+        let buf_len = (test.config.len as usize).max(65_536);
+
+        thread::spawn(move || {
+            let mut receipt = ClientStreamReceipt::empty(stream_id);
+            let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
+            let timer = Timer::new();
+
+            if let Some(mut protocol) = connect(host, &cookie) {
+                if let Err(e) = protocol.transfer.set_nonblocking(false) {
+                    eprintln!("failed to set data stream to blocking: {:?}", e);
+                    emit_stream_finished(&receipt_tx, receipt, &tx);
+                    return;
+                }
+
+                let mut buf = vec![0u8; buf_len];
+                while !should_stop(&timer, duration) {
+                    match protocol.transfer.recv(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let now = Instant::now();
+                            if receipt.first_send_at.is_none() {
+                                receipt.first_send_at = Some(now);
+                            }
+                            receipt.last_send_at = Some(now);
+                            receipt.bytes_sent += n as u64;
+
+                            let first = receipt.first_send_at.expect("first just set");
+                            let in_omit = now.duration_since(first) < omit;
+                            if in_omit {
+                                receipt.bytes_omit += n as u64;
+                            } else if receipt.first_measured_at.is_none() {
+                                receipt.first_measured_at = Some(now);
+                            }
+
+                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                println!(
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
+                                );
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+
+                if let Some(last) = receipt.last_send_at {
+                    if let Some(snap) = reporter.flush(last) {
+                        if snap.bytes > 0 {
+                            println!(
+                                "{}",
+                                format_interval_row(
+                                    snap.stream_id,
+                                    snap.start_sec,
+                                    snap.end_sec,
+                                    snap.bytes,
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+            emit_stream_finished(&receipt_tx, receipt, &tx);
+        });
+    }
+
+    /// Client-side UDP receiver. Establishes demux at the server by
+    /// sending the session cookie as the first datagram, then drains
+    /// inbound packets into byte/packet counters. Used for `Reverse`
+    /// and `Bidirectional` UDP tests.
+    pub fn start_udp_recv(test: &Test, host: String, cookie: [u8; COOKIE_LEN], stream_id: u32) {
+        let tx = test.tx_channel.clone();
+        let receipt_tx = test.receipt_tx.clone();
+        let buf_len = (test.config.len as usize).max(65_536);
+        let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
+        let omit = Duration::from_secs(test.config.omit as u64);
+
+        thread::spawn(move || {
+            let mut receipt = ClientStreamReceipt::empty(stream_id);
+            let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
+            let timer = Timer::new();
+
+            let socket = match UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("udp bind failed: {:?}", e);
+                    emit_stream_finished(&receipt_tx, receipt, &tx);
+                    return;
+                }
+            };
+            if let Err(e) = socket.connect(&host) {
+                eprintln!("udp connect failed: {:?}", e);
+                emit_stream_finished(&receipt_tx, receipt, &tx);
+                return;
+            }
+            // Stream-init so the server's udp_session demux binds our
+            // source address to this stream.
+            let _ = socket.send(&cookie);
+            let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
+
+            let mut buf = vec![0u8; buf_len];
+            while !should_stop(&timer, duration) {
+                match socket.recv(&mut buf) {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        let now = Instant::now();
+                        if receipt.first_send_at.is_none() {
+                            receipt.first_send_at = Some(now);
+                        }
+                        receipt.last_send_at = Some(now);
+                        receipt.bytes_sent += n as u64;
+                        receipt.packets += 1;
+
+                        let first = receipt.first_send_at.expect("set");
+                        let in_omit = now.duration_since(first) < omit;
+                        if in_omit {
+                            receipt.bytes_omit += n as u64;
+                        } else if receipt.first_measured_at.is_none() {
+                            receipt.first_measured_at = Some(now);
+                        }
+
+                        if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                            println!(
+                                "{}",
+                                format_interval_row(
+                                    snap.stream_id,
+                                    snap.start_sec,
+                                    snap.end_sec,
+                                    snap.bytes,
+                                )
+                            );
+                        }
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        continue
+                    }
+                    Err(_) => break,
+                }
+            }
+            emit_stream_finished(&receipt_tx, receipt, &tx);
+        });
+    }
+
     pub fn send_data(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self.protocol {
             Some(ref mut protocol) => protocol.transfer.send(buf),
@@ -361,6 +523,51 @@ mod tests {
 
         let err = stream.send_data(b"payload").expect_err("should bubble");
         assert_eq!(err.kind(), ErrorKind::Other);
+    }
+
+    #[test]
+    fn start_recv_pulls_bytes_from_peer() {
+        use crate::common::cookie::COOKIE_LEN;
+        use crate::common::test::{Config, Test};
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+
+        let writer = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut cookie_buf = [0u8; COOKIE_LEN];
+            std::io::Read::read_exact(&mut sock, &mut cookie_buf).expect("read cookie");
+            // Send some bytes.
+            for _ in 0..4 {
+                sock.write_all(&vec![0xA5u8; 4096]).expect("write");
+            }
+        });
+
+        let mut cfg = Config::with_host("127.0.0.1");
+        cfg.port = port;
+        cfg.time = 1;
+        cfg.parallel = 1;
+        cfg.len = 8192;
+        let test = Test::new(cfg);
+        let expected_cookie = test.cookie;
+        let host = test.config.host_port();
+
+        Stream::start_recv(&test, host, expected_cookie, 1);
+
+        let receipt = test
+            .receipt_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("receipt");
+        writer.join().expect("writer");
+
+        assert!(
+            receipt.bytes_sent >= 16_384,
+            "expected ≥ 16 KB, got {}",
+            receipt.bytes_sent
+        );
     }
 
     #[test]
