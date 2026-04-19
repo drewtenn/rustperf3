@@ -15,6 +15,7 @@ pub mod interval;
 pub mod jitter;
 pub mod pacing;
 pub mod protocol;
+pub mod session;
 pub mod test;
 pub mod timer;
 pub mod stream;
