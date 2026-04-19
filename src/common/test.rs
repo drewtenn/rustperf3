@@ -104,6 +104,12 @@ pub struct Config {
 	/// `N > 1` is an rperf3 extension.
 	pub max_concurrent: u32,
 	pub direction: Direction,
+	/// Emit iperf3-compatible JSON instead of text at end-of-test.
+	pub json: bool,
+	/// Force a specific format unit for text output (k, K, m, M, g, G). None = auto-scale.
+	pub format_unit: Option<char>,
+	/// Redirect all output to this file path.
+	pub logfile: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -122,6 +128,9 @@ impl Config {
 			one_off: false,
 			max_concurrent: 1,
 			direction: Direction::Forward,
+			json: false,
+			format_unit: None,
+			logfile: None,
 		}
 	}
 
@@ -218,6 +227,9 @@ mod tests {
 			one_off: false,
 			max_concurrent: 1,
 			direction: Direction::Forward,
+			json: false,
+			format_unit: None,
+			logfile: None,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
 	}

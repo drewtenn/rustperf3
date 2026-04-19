@@ -43,6 +43,9 @@ fn rperf3_client_bidir_against_iperf3_server() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Bidirectional,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     rperf3::run_client(cfg);
     let output = iperf3_server.wait_with_output().expect("wait iperf3");

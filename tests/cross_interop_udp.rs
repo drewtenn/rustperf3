@@ -48,6 +48,9 @@ fn rperf3_client_talks_to_iperf3_server_udp() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Forward,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     rperf3::run_client(client_cfg);
 

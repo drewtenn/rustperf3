@@ -36,6 +36,9 @@ fn self_test_loopback_tcp_short_run() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Forward,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
 
     // Tiny delay so the server thread reaches listener.accept() before
@@ -79,6 +82,9 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Forward,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -154,6 +160,9 @@ fn self_test_loopback_udp_short_run() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Forward,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -215,6 +224,9 @@ fn self_test_loopback_tcp_reverse() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Reverse,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -243,6 +255,9 @@ fn self_test_loopback_udp_reverse() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Reverse,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -272,6 +287,9 @@ fn self_test_loopback_tcp_bidir() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Bidirectional,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -297,6 +315,9 @@ fn self_test_concurrent_three_clients() {
         direction: rperf3::Direction::Forward,
         one_off: false,
         max_concurrent: 4,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
 
     let server = thread::spawn(move || {
@@ -323,6 +344,9 @@ fn self_test_concurrent_three_clients() {
                 direction: rperf3::Direction::Forward,
                 one_off: false,
                 max_concurrent: 1,
+                json: false,
+                format_unit: None,
+                logfile: None,
             };
             rperf3::run_client(cfg);
         }));
@@ -354,6 +378,9 @@ fn self_test_loopback_udp_bidir() {
         one_off: false,
         max_concurrent: 1,
         direction: rperf3::Direction::Bidirectional,
+        json: false,
+        format_unit: None,
+        logfile: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
