@@ -86,6 +86,18 @@ impl StreamReceipt {
 /// unblocks the server within half a minute.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Peer closed the control channel without fully participating in the
+/// post-test control-channel handshake. iperf3 3.21 TCP clients do this
+/// routinely after sending TEST_END.
+fn is_peer_closed(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+    )
+}
+
 /// Entry point invoked from `main` when `-s` is given. Binds the
 /// configured address, handles one test session, and returns.
 pub fn run_server(config: Config) {
@@ -162,9 +174,26 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
         );
     }
 
-    exchange_results(&mut control, &receipts, &cpu_usage)?;
-    println!("results exchanged");
-    finalize_test(&mut control)?;
+    // iperf3 3.21 TCP clients may half-close the control channel
+    // around TEST_END, so tolerate early EOF on the results exchange.
+    // We still send DISPLAY_RESULTS afterwards because iperf3 waits on
+    // it to transition to its own end-of-test state before exiting.
+    if let Err(e) = exchange_results(&mut control, &receipts, &cpu_usage) {
+        if is_peer_closed(&e) {
+            eprintln!("results exchange: peer closed early ({})", e);
+        } else {
+            return Err(e);
+        }
+    } else {
+        println!("results exchanged");
+    }
+    if let Err(e) = finalize_test(&mut control) {
+        if is_peer_closed(&e) {
+            eprintln!("finalize: peer closed early ({})", e);
+        } else {
+            return Err(e);
+        }
+    }
 
     let (summary_bytes, summary_duration) = if opts.omit > 0 && !steady.is_zero() {
         (measured_bytes, steady)
@@ -236,14 +265,14 @@ fn run_udp_branch(
     Ok(receipts)
 }
 
-/// Send DisplayResults and block until the client sends IperfDone. This
-/// completes the iPerf3 protocol and lets both sides drop their
-/// sockets cleanly.
+/// Send DisplayResults and block until the client signals it's done.
+/// rperf clients send IperfDone; iperf3 3.21 clients send ClientTerminate
+/// (and close the socket) — both mean the same thing here.
 pub fn finalize_test(control: &mut Protocol) -> io::Result<()> {
     send_control_byte(control.transfer.as_mut(), Message::DisplayResults)?;
     loop {
         match recv_control_byte(control.transfer.as_mut())? {
-            Message::IperfDone => return Ok(()),
+            Message::IperfDone | Message::ClientTerminate => return Ok(()),
             other => eprintln!("unexpected control byte while awaiting IperfDone: {:?}", other),
         }
     }
@@ -315,6 +344,12 @@ pub fn measured_steady_state(receipts: &[StreamReceipt]) -> Duration {
 /// Send ExchangeResults, receive the client's Results, then send ours.
 /// The server builds its `Results` from the per-stream byte totals the
 /// reader threads produced.
+///
+/// iperf3 3.21 TCP clients may half-close the control channel before
+/// sending their Results JSON, so tolerate an early read EOF. We still
+/// try to send our Results JSON afterwards because the peer may be
+/// blocked reading it. The return value only reflects the *read* phase
+/// so the caller can decide whether to continue with DISPLAY_RESULTS.
 pub fn exchange_results(
     control: &mut Protocol,
     receipts: &[StreamReceipt],
@@ -322,11 +357,14 @@ pub fn exchange_results(
 ) -> io::Result<()> {
     send_control_byte(control.transfer.as_mut(), Message::ExchangeResults)?;
 
-    let _client_results: Results = recv_framed_json(control.transfer.as_mut())?;
+    let read_result: io::Result<Results> = recv_framed_json(control.transfer.as_mut());
 
+    // Always send our Results so the peer doesn't block reading them,
+    // even if the peer already half-closed.
     let server_results = build_server_results(receipts, cpu);
-    send_framed_json(control.transfer.as_mut(), &server_results)?;
-    Ok(())
+    let _ = send_framed_json(control.transfer.as_mut(), &server_results);
+
+    read_result.map(|_| ())
 }
 
 /// Build the Results payload the server reports back. Per-stream bytes
