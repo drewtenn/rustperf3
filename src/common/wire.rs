@@ -46,6 +46,10 @@ pub struct ClientOptions {
     pub udp: bool,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub bandwidth: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reverse: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bidirectional: bool,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -63,6 +67,8 @@ impl ClientOptions {
             client_version: CLIENT_VERSION.to_string(),
             udp: false,
             bandwidth: 0,
+            reverse: false,
+            bidirectional: false,
         }
     }
 }
@@ -396,5 +402,40 @@ mod tests {
         assert_eq!(opts.parallel, 1);
         assert_eq!(opts.bandwidth, 1_000_000);
         assert_eq!(opts.client_version, "3.21");
+    }
+
+    #[test]
+    fn options_defaults_reverse_and_bidirectional_false() {
+        let opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        assert!(!opts.reverse);
+        assert!(!opts.bidirectional);
+    }
+
+    #[test]
+    fn options_tcp_forward_does_not_emit_direction_fields() {
+        let opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        let json = serde_json::to_string(&opts).unwrap();
+        assert!(!json.contains("reverse"), "unexpected reverse key: {}", json);
+        assert!(!json.contains("bidirectional"), "unexpected bidirectional key: {}", json);
+    }
+
+    #[test]
+    fn options_reverse_roundtrip() {
+        let mut opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        opts.reverse = true;
+        let json = serde_json::to_string(&opts).unwrap();
+        assert!(json.contains("\"reverse\":true"));
+        let back: ClientOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, opts);
+    }
+
+    #[test]
+    fn options_bidirectional_roundtrip() {
+        let mut opts = ClientOptions::tcp_defaults(1, 1, DEFAULT_TCP_LEN as u32);
+        opts.bidirectional = true;
+        let json = serde_json::to_string(&opts).unwrap();
+        assert!(json.contains("\"bidirectional\":true"));
+        let back: ClientOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, opts);
     }
 }
