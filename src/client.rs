@@ -375,6 +375,12 @@ fn send_options(test: &mut Test) {
     }
     options.reverse = test.config.direction.is_reverse();
     options.bidirectional = test.config.direction.is_bidirectional();
+    options.window_size = test.config.window_size;
+    options.mss = test.config.mss;
+    options.congestion = test.config.congestion.clone();
+    options.tos = test.config.tos;
+    options.total_bytes = test.config.total_bytes;
+    options.total_blocks = test.config.total_blocks;
 
     // Attach RSA authtoken when a public key and username are configured.
     if let (Some(pk_path), Some(user)) = (&test.config.rsa_public_key, &test.config.username) {

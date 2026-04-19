@@ -18,7 +18,7 @@ use crate::common::auth;
 use crate::common::cookie::{recv_cookie, COOKIE_LEN};
 use crate::common::cpu::{self, CpuUsage};
 use crate::common::interval::IntervalReporter;
-use crate::common::protocol::{Protocol, Tcp};
+use crate::common::protocol::{Protocol, Tcp, TuningOpts};
 use crate::common::test::Config;
 use crate::common::udp_session::{accept_udp_streams, bind_udp, run_udp_receiver};
 use crate::common::wire::{
@@ -340,6 +340,16 @@ fn serve_session_from_channel(
         opts.parallel,
         handshake_timeout,
     )?;
+    // Apply socket tuning the client negotiated.
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    for s in &streams {
+        let _ = s.transfer.apply_tuning(&tuning);
+    }
     send_test_start_running(&mut session.control)?;
     println!("{}", crate::common::stream::INTERVAL_HEADER);
 
@@ -507,6 +517,16 @@ fn run_tcp_branch(
     handshake_timeout: Option<Duration>,
 ) -> io::Result<Vec<StreamReceipt>> {
     let streams = accept_streams_via_listener(control, listener, cookie, opts.parallel, handshake_timeout)?;
+    // Apply socket tuning options the client negotiated.
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    for s in &streams {
+        let _ = s.transfer.apply_tuning(&tuning);
+    }
     send_test_start_running(control)?;
     println!("{}", crate::common::stream::INTERVAL_HEADER);
 
@@ -569,19 +589,39 @@ fn run_tcp_send_streams(
     let duration = Duration::from_secs((opts.time + opts.omit) as u64);
     let omit = Duration::from_secs(opts.omit as u64);
     let len = opts.len as usize;
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    let max_bytes = opts.total_bytes;
+    let max_blocks = opts.total_blocks;
 
     let handles: Vec<_> = streams
         .into_iter()
         .enumerate()
         .map(|(i, mut proto)| {
             let stream_id = (i + 1) as u32;
+            let tuning = tuning.clone();
             std::thread::spawn(move || {
                 let _ = proto.transfer.set_nonblocking(false);
+                let _ = proto.transfer.apply_tuning(&tuning);
                 let mut receipt = StreamReceipt::empty();
                 let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
                 let timer = Timer::new();
                 let buf = build_payload(len);
                 while !timer.is_elapsed(duration) {
+                    if let Some(mb) = max_bytes {
+                        if receipt.bytes >= mb {
+                            break;
+                        }
+                    }
+                    if let Some(mb) = max_blocks {
+                        if (receipt.bytes / len as u64) >= mb {
+                            break;
+                        }
+                    }
                     match proto.transfer.send(&buf) {
                         Ok(n) if n > 0 => {
                             let now = Instant::now();
