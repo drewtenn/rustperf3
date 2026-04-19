@@ -11,6 +11,9 @@ fn main() {
     if let Some(t) = config_ref.title.clone() {
         rperf3::common::stream::set_title(t);
     }
+    if let Some(spec) = &config_ref.affinity {
+        rperf3::common::affinity::set_affinity(spec);
+    }
     if let Some(p) = &config_ref.logfile {
         #[cfg(unix)]
         if let Err(e) = redirect_stdout_to_file(p) {
