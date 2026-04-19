@@ -99,7 +99,8 @@ fn is_peer_closed(e: &io::Error) -> bool {
 }
 
 /// Entry point invoked from `main` when `-s` is given. Binds the
-/// configured address, handles one test session, and returns.
+/// configured address, then loops forever accepting sessions (unless
+/// `--one-off` was passed, in which case it exits after the first test).
 pub fn run_server(config: Config) {
     let bind_addr = config.host_port();
     let listener = match TcpListener::bind(&bind_addr) {
@@ -113,7 +114,7 @@ pub fn run_server(config: Config) {
     println!("Server listening on {}", config.port);
     println!("-----------------------------------------------------------");
 
-    if let Err(e) = run_server_on(listener) {
+    if let Err(e) = run_server_loop(listener, &config, Some(DEFAULT_HANDSHAKE_TIMEOUT)) {
         eprintln!("server session ended with error: {:?}", e);
     }
 }
@@ -135,13 +136,35 @@ pub fn run_server_on_timeout(
     listener: TcpListener,
     handshake_timeout: Option<Duration>,
 ) -> io::Result<u64> {
-    serve_one(&listener, handshake_timeout)
+    serve_one_session(&listener, handshake_timeout)
+}
+
+/// Loop forever accepting sessions (or just once if `config.one_off`).
+/// `max_concurrent > 1` is reserved for Task 3; until then it is treated
+/// the same as 1 (sequential sessions).
+pub fn run_server_loop(
+    listener: TcpListener,
+    config: &Config,
+    handshake_timeout: Option<Duration>,
+) -> io::Result<()> {
+    // max_concurrent > 1 goes through the concurrent accept loop
+    // added in Task 3 of this phase; for now treat > 1 as 1.
+    let _ = config.max_concurrent;
+    loop {
+        match serve_one_session(&listener, handshake_timeout) {
+            Ok(_) => {}
+            Err(e) => eprintln!("session ended with error: {:?}", e),
+        }
+        if config.one_off {
+            return Ok(());
+        }
+    }
 }
 
 /// Drive a single test session end-to-end. Returns the total bytes
 /// received across all data streams so callers (the binary's
 /// `run_server`, integration tests) can surface it.
-fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io::Result<u64> {
+fn serve_one_session(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io::Result<u64> {
     let (mut control, cookie) = accept_control(listener, handshake_timeout)?;
     let cpu_start = cpu::sample();
     let _ = cookie_display(&cookie);

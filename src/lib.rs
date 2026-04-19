@@ -13,4 +13,4 @@ pub use client::run_client;
 pub use common::test::Config;
 pub use common::Direction;
 pub use common::TransportKind;
-pub use server::{run_server, run_server_on, run_server_on_timeout, DEFAULT_HANDSHAKE_TIMEOUT};
+pub use server::{run_server, run_server_loop, run_server_on, run_server_on_timeout, DEFAULT_HANDSHAKE_TIMEOUT};
