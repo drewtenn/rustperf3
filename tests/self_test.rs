@@ -279,6 +279,65 @@ fn self_test_loopback_tcp_bidir() {
 }
 
 #[test]
+fn self_test_concurrent_three_clients() {
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_config = rperf3::Config {
+        host: "127.0.0.1".into(),
+        port,
+        time: 1,
+        parallel: 1,
+        len: 131_072,
+        omit: 0,
+        transport: rperf3::TransportKind::Tcp,
+        bandwidth: 0,
+        direction: rperf3::Direction::Forward,
+        one_off: false,
+        max_concurrent: 4,
+    };
+
+    let server = thread::spawn(move || {
+        // Errors only indicate accept-loop termination; ignore.
+        let _ = rperf3::run_server_loop(listener, &server_config, None);
+    });
+
+    thread::sleep(Duration::from_millis(200));
+
+    // Fire three clients in parallel.
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let port_c = port;
+        clients.push(thread::spawn(move || {
+            let cfg = rperf3::Config {
+                host: "127.0.0.1".into(),
+                port: port_c,
+                time: 1,
+                parallel: 1,
+                len: 131_072,
+                omit: 0,
+                transport: rperf3::TransportKind::Tcp,
+                bandwidth: 0,
+                direction: rperf3::Direction::Forward,
+                one_off: false,
+                max_concurrent: 1,
+            };
+            rperf3::run_client(cfg);
+        }));
+    }
+
+    for c in clients {
+        c.join().expect("client panicked");
+    }
+
+    // Server thread is intentionally leaked (accept loop is infinite).
+    // Test passes if all clients completed.
+    drop(server);
+}
+
+#[test]
 fn self_test_loopback_udp_bidir() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
