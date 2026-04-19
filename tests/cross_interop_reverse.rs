@@ -46,6 +46,15 @@ fn rperf3_client_reverse_against_iperf3_server() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     rperf3::run_client(cfg);
     let output = iperf3_server.wait_with_output().expect("wait iperf3");

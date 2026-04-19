@@ -110,6 +110,24 @@ pub struct Config {
 	pub format_unit: Option<char>,
 	/// Redirect all output to this file path.
 	pub logfile: Option<std::path::PathBuf>,
+	/// SO_SNDBUF / SO_RCVBUF in bytes (-w).
+	pub window_size: Option<u32>,
+	/// TCP_MAXSEG in bytes (-M). Linux-only; silently ignored elsewhere.
+	pub mss: Option<u32>,
+	/// TCP congestion algorithm name (-C). Linux-only; silently ignored elsewhere.
+	pub congestion: Option<String>,
+	/// IP_TOS value (-S).
+	pub tos: Option<u8>,
+	/// Zero-copy mode (-Z). Parsed stub — not yet implemented.
+	pub zero_copy: bool,
+	/// Terminate after this many bytes sent/received (-n).
+	pub total_bytes: Option<u64>,
+	/// Terminate after this many blocks (writes) sent/received (-k).
+	pub total_blocks: Option<u64>,
+	/// Title prefix for text output lines (-T).
+	pub title: Option<String>,
+	/// CPU affinity spec (-A). Linux-only; silently ignored elsewhere.
+	pub affinity: Option<String>,
 }
 
 impl Config {
@@ -131,6 +149,15 @@ impl Config {
 			json: false,
 			format_unit: None,
 			logfile: None,
+			window_size: None,
+			mss: None,
+			congestion: None,
+			tos: None,
+			zero_copy: false,
+			total_bytes: None,
+			total_blocks: None,
+			title: None,
+			affinity: None,
 		}
 	}
 
@@ -230,6 +257,15 @@ mod tests {
 			json: false,
 			format_unit: None,
 			logfile: None,
+			window_size: None,
+			mss: None,
+			congestion: None,
+			tos: None,
+			zero_copy: false,
+			total_bytes: None,
+			total_blocks: None,
+			title: None,
+			affinity: None,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
 	}

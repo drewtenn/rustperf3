@@ -1,6 +1,25 @@
 use std::net::UdpSocket;
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 use std::{thread, time::{Duration, Instant}};
+
+/// Process-wide title prefix set by `-T / --title`. Written once at startup;
+/// read from every thread that emits interval rows.
+static TITLE: OnceLock<String> = OnceLock::new();
+
+/// Set the global title. Silently ignored if called more than once
+/// (OnceLock guarantees only the first call wins).
+pub fn set_title(title: String) {
+    let _ = TITLE.set(title);
+}
+
+/// Prefix `line` with the global title if one was set, e.g.
+/// `"run-1:  [  5]   0.00-1.00 ..."`.
+pub fn prefix_title(line: String) -> String {
+    match TITLE.get() {
+        Some(t) => format!("{}:  {}", t, line),
+        None => line,
+    }
+}
 
 use super::cookie::COOKIE_LEN;
 use super::format;
@@ -122,12 +141,12 @@ impl Stream {
                                 if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                     println!(
                                         "{}",
-                                        format_interval_row(
+                                        prefix_title(format_interval_row(
                                             snap.stream_id,
                                             snap.start_sec,
                                             snap.end_sec,
                                             snap.bytes,
-                                        )
+                                        ))
                                     );
                                 }
                             }
@@ -147,12 +166,12 @@ impl Stream {
                             if snap.bytes > 0 {
                                 println!(
                                     "{}",
-                                    format_interval_row(
+                                    prefix_title(format_interval_row(
                                         snap.stream_id,
                                         snap.start_sec,
                                         snap.end_sec,
                                         snap.bytes,
-                                    )
+                                    ))
                                 );
                             }
                         }
@@ -325,12 +344,12 @@ impl Stream {
                                 if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                     println!(
                                         "{}",
-                                        format_interval_row(
+                                        prefix_title(format_interval_row(
                                             snap.stream_id,
                                             snap.start_sec,
                                             snap.end_sec,
                                             snap.bytes,
-                                        )
+                                        ))
                                     );
                                 }
                             }
@@ -346,12 +365,12 @@ impl Stream {
                             if snap.bytes > 0 {
                                 println!(
                                     "{}",
-                                    format_interval_row(
+                                    prefix_title(format_interval_row(
                                         snap.stream_id,
                                         snap.start_sec,
                                         snap.end_sec,
                                         snap.bytes,
-                                    )
+                                    ))
                                 );
                             }
                         }
@@ -422,12 +441,12 @@ impl Stream {
                             if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                 println!(
                                     "{}",
-                                    format_interval_row(
+                                    prefix_title(format_interval_row(
                                         snap.stream_id,
                                         snap.start_sec,
                                         snap.end_sec,
                                         snap.bytes,
-                                    )
+                                    ))
                                 );
                             }
                         }

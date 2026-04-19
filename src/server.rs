@@ -340,12 +340,12 @@ fn serve_session_from_channel(
     println!("{}", crate::common::stream::INTERVAL_HEADER);
     println!(
         "{}  receiver",
-        crate::common::stream::format_interval_row(
+        crate::common::stream::prefix_title(crate::common::stream::format_interval_row(
             1,
             0.0,
             summary_duration.as_secs_f64(),
             summary_bytes
-        ),
+        )),
     );
     if cpu_usage.total_pct > 0.0 {
         println!(
@@ -407,7 +407,9 @@ fn serve_one_session(listener: &TcpListener, handshake_timeout: Option<Duration>
     println!("{}", crate::common::stream::INTERVAL_HEADER);
     println!(
         "{}  receiver",
-        crate::common::stream::format_interval_row(1, 0.0, summary_duration.as_secs_f64(), summary_bytes),
+        crate::common::stream::prefix_title(crate::common::stream::format_interval_row(
+            1, 0.0, summary_duration.as_secs_f64(), summary_bytes,
+        )),
     );
     if cpu_usage.total_pct > 0.0 {
         println!(
@@ -519,12 +521,12 @@ fn run_tcp_send_streams(
                             if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                 println!(
                                     "{}",
-                                    format_interval_row(
+                                    crate::common::stream::prefix_title(format_interval_row(
                                         snap.stream_id,
                                         snap.start_sec,
                                         snap.end_sec,
                                         snap.bytes,
-                                    )
+                                    ))
                                 );
                             }
                         }
@@ -670,12 +672,12 @@ fn run_udp_send_streams(
                             if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                 println!(
                                     "{}",
-                                    format_interval_row(
+                                    crate::common::stream::prefix_title(format_interval_row(
                                         snap.stream_id,
                                         snap.start_sec,
                                         snap.end_sec,
                                         snap.bytes,
-                                    )
+                                    ))
                                 );
                             }
                         }
@@ -958,11 +960,13 @@ pub fn recv_stream_bytes(
                     if let Some(snap) = r.on_bytes(n as u64, now) {
                         println!(
                             "{}",
-                            crate::common::stream::format_interval_row(
-                                snap.stream_id,
-                                snap.start_sec,
-                                snap.end_sec,
-                                snap.bytes,
+                            crate::common::stream::prefix_title(
+                                crate::common::stream::format_interval_row(
+                                    snap.stream_id,
+                                    snap.start_sec,
+                                    snap.end_sec,
+                                    snap.bytes,
+                                )
                             )
                         );
                     }
@@ -978,11 +982,13 @@ pub fn recv_stream_bytes(
             if snap.bytes > 0 {
                 println!(
                     "{}",
-                    crate::common::stream::format_interval_row(
-                        snap.stream_id,
-                        snap.start_sec,
-                        snap.end_sec,
-                        snap.bytes,
+                    crate::common::stream::prefix_title(
+                        crate::common::stream::format_interval_row(
+                            snap.stream_id,
+                            snap.start_sec,
+                            snap.end_sec,
+                            snap.bytes,
+                        )
                     )
                 );
             }

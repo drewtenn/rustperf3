@@ -8,6 +8,9 @@ fn main() {
     let config_ref = match &mode {
         Mode::Client(c) | Mode::Server(c) => c,
     };
+    if let Some(t) = config_ref.title.clone() {
+        rperf3::common::stream::set_title(t);
+    }
     if let Some(p) = &config_ref.logfile {
         #[cfg(unix)]
         if let Err(e) = redirect_stdout_to_file(p) {

@@ -170,7 +170,7 @@ fn exchange_results(test: &mut Test) {
         println!("{}", stream::INTERVAL_HEADER);
         println!(
             "{}  {}",
-            stream::format_interval_row(1, 0.0, sender_secs, sender_bytes),
+            stream::prefix_title(stream::format_interval_row(1, 0.0, sender_secs, sender_bytes)),
             client_role,
         );
     }
@@ -242,7 +242,7 @@ fn exchange_results(test: &mut Test) {
                 };
                 println!(
                     "{}  {}",
-                    stream::format_interval_row(1, 0.0, sender_secs, server_bytes),
+                    stream::prefix_title(stream::format_interval_row(1, 0.0, sender_secs, server_bytes)),
                     server_role,
                 );
 

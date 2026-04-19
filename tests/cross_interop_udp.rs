@@ -51,6 +51,15 @@ fn rperf3_client_talks_to_iperf3_server_udp() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     rperf3::run_client(client_cfg);
 
