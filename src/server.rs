@@ -99,7 +99,8 @@ fn is_peer_closed(e: &io::Error) -> bool {
 }
 
 /// Entry point invoked from `main` when `-s` is given. Binds the
-/// configured address, handles one test session, and returns.
+/// configured address, then loops forever accepting sessions (unless
+/// `--one-off` was passed, in which case it exits after the first test).
 pub fn run_server(config: Config) {
     let bind_addr = config.host_port();
     let listener = match TcpListener::bind(&bind_addr) {
@@ -113,7 +114,7 @@ pub fn run_server(config: Config) {
     println!("Server listening on {}", config.port);
     println!("-----------------------------------------------------------");
 
-    if let Err(e) = run_server_on(listener) {
+    if let Err(e) = run_server_loop(listener, &config, Some(DEFAULT_HANDSHAKE_TIMEOUT)) {
         eprintln!("server session ended with error: {:?}", e);
     }
 }
@@ -135,13 +136,231 @@ pub fn run_server_on_timeout(
     listener: TcpListener,
     handshake_timeout: Option<Duration>,
 ) -> io::Result<u64> {
-    serve_one(&listener, handshake_timeout)
+    serve_one_session(&listener, handshake_timeout)
+}
+
+/// Loop forever accepting sessions (or just once if `config.one_off`).
+///
+/// When `max_concurrent > 1` the server enters concurrent mode: a single
+/// accept loop demuxes connections by cookie and dispatches each session
+/// onto its own thread. In that mode `one_off` is ignored — use
+/// `--max-concurrent 1` together with `--one-off` for the one-shot path.
+///
+/// UDP is not supported in concurrent mode; UDP sessions are rejected
+/// with `AccessDenied` and a follow-up is needed to multiplex UDP
+/// across sessions.
+pub fn run_server_loop(
+    listener: TcpListener,
+    config: &Config,
+    handshake_timeout: Option<Duration>,
+) -> io::Result<()> {
+    if config.max_concurrent > 1 {
+        return run_concurrent_accept_loop(listener, handshake_timeout, config.max_concurrent);
+    }
+    loop {
+        match serve_one_session(&listener, handshake_timeout) {
+            Ok(_) => {}
+            Err(e) => eprintln!("session ended with error: {:?}", e),
+        }
+        if config.one_off {
+            return Ok(());
+        }
+    }
+}
+
+/// Accept loop for `max_concurrent > 1`. A single thread calls
+/// `listener.accept()` in a loop, reads the cookie from each new
+/// connection, then either:
+///
+/// * Pushes the connection onto an existing session's data channel
+///   (cookie matches a live session), or
+/// * Creates a new session and spawns a thread to run it (new cookie,
+///   registry not full), or
+/// * Sends `AccessDenied` and closes the connection (registry full).
+///
+/// UDP sessions are rejected immediately with `AccessDenied`; concurrent
+/// UDP multiplexing is a planned follow-up.
+fn run_concurrent_accept_loop(
+    listener: TcpListener,
+    handshake_timeout: Option<Duration>,
+    max_concurrent: u32,
+) -> io::Result<()> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    let registry: Arc<
+        Mutex<HashMap<[u8; crate::common::cookie::COOKIE_LEN], crate::common::session::SessionHandle>>,
+    > = Arc::new(Mutex::new(HashMap::new()));
+
+    loop {
+        let (sock, _addr) = listener.accept()?;
+        let mut tcp = tcp_protocol(sock);
+        tcp.transfer.set_read_timeout(handshake_timeout)?;
+        let cookie = match recv_cookie(tcp.transfer.as_mut()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("cookie read failed: {:?}", e);
+                continue;
+            }
+        };
+
+        let mut reg = registry.lock().unwrap();
+        if let Some(handle) = reg.get(&cookie) {
+            if handle.data_tx.send(tcp).is_err() {
+                eprintln!(
+                    "session channel closed; dropping stream for cookie {:?}",
+                    &cookie[..8]
+                );
+            }
+        } else if reg.len() >= max_concurrent as usize {
+            drop(reg);
+            let _ = send_control_byte(tcp.transfer.as_mut(), Message::AccessDenied);
+        } else {
+            let (session, handle) =
+                crate::common::session::Session::new(cookie, tcp);
+            reg.insert(cookie, handle);
+            drop(reg);
+            let registry_cleanup = registry.clone();
+            std::thread::spawn(move || {
+                let _ = serve_session_from_channel(session, handshake_timeout);
+                registry_cleanup.lock().unwrap().remove(&cookie);
+            });
+        }
+    }
+}
+
+/// Run one session whose control connection and data streams arrive via
+/// the concurrent accept loop. The control `Protocol` and data-stream
+/// `Receiver` are bundled in `session`.
+///
+/// UDP is not supported in concurrent mode — if the client negotiates
+/// UDP, `AccessDenied` is sent and an error is returned.
+fn serve_session_from_channel(
+    mut session: crate::common::session::Session,
+    handshake_timeout: Option<Duration>,
+) -> io::Result<u64> {
+    let cpu_start = cpu::sample();
+    let opts = negotiate_options(&mut session.control)?;
+
+    if opts.udp {
+        // Concurrent UDP not supported — reject and bail out.
+        let _ = send_control_byte(
+            session.control.transfer.as_mut(),
+            Message::AccessDenied,
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "concurrent UDP sessions not supported; use --max-concurrent 1",
+        ));
+    }
+
+    // TCP path: tell the client to open data streams, then pull them
+    // from the channel (the accept loop reads the cookies and routes
+    // each data connection here).
+    send_control_byte(session.control.transfer.as_mut(), Message::CreateStreams)?;
+    let streams = crate::common::session::accept_streams_from_channel(
+        &session.data_rx,
+        opts.parallel,
+        handshake_timeout,
+    )?;
+    send_test_start_running(&mut session.control)?;
+    println!("{}", crate::common::stream::INTERVAL_HEADER);
+
+    let run_timeout =
+        handshake_timeout.map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
+    session.control.transfer.set_read_timeout(run_timeout)?;
+
+    let omit_window = Duration::from_secs(opts.omit as u64);
+    let receipts = if opts.reverse {
+        let r = run_tcp_send_streams(streams, &opts);
+        let _ = wait_for_test_end(&mut session.control);
+        r
+    } else if opts.bidirectional {
+        let mut send_protos = Vec::with_capacity(streams.len());
+        let mut recv_protos = Vec::with_capacity(streams.len());
+        for proto in streams {
+            let cloned = proto.transfer.try_clone_tcp()?;
+            send_protos.push(Protocol { transfer: cloned });
+            recv_protos.push(proto);
+        }
+        let send_handle = std::thread::spawn({
+            let opts = opts.clone();
+            move || run_tcp_send_streams(send_protos, &opts)
+        });
+        let handles = spawn_stream_readers(recv_protos, omit_window);
+        wait_for_test_end(&mut session.control)?;
+        let mut receipts = join_stream_totals(handles);
+        receipts.extend(send_handle.join().unwrap_or_default());
+        receipts
+    } else {
+        let handles = spawn_stream_readers(streams, omit_window);
+        wait_for_test_end(&mut session.control)?;
+        join_stream_totals(handles)
+    };
+
+    let total_bytes: u64 = receipts.iter().map(|r| r.bytes).sum();
+    let measured_bytes: u64 = receipts.iter().map(|r| r.bytes_measured()).sum();
+    let raw = measured_duration(&receipts);
+    let steady = measured_steady_state(&receipts);
+
+    session
+        .control
+        .transfer
+        .set_read_timeout(handshake_timeout)?;
+    let wall = if !steady.is_zero() {
+        steady
+    } else if !raw.is_zero() {
+        raw
+    } else {
+        Duration::ZERO
+    };
+    let cpu_end = cpu::sample();
+    let cpu_usage = cpu::usage(&cpu_start, &cpu_end, wall);
+
+    if let Err(e) = exchange_results(&mut session.control, &receipts, &cpu_usage) {
+        if !is_peer_closed(&e) {
+            return Err(e);
+        }
+    }
+    if let Err(e) = finalize_test(&mut session.control) {
+        if !is_peer_closed(&e) {
+            return Err(e);
+        }
+    }
+
+    let (summary_bytes, summary_duration) = if opts.omit > 0 && !steady.is_zero() {
+        (measured_bytes, steady)
+    } else if !raw.is_zero() {
+        (total_bytes, raw)
+    } else {
+        (total_bytes, Duration::from_secs(opts.time as u64))
+    };
+
+    println!("{}", crate::common::stream::SUMMARY_SEPARATOR);
+    println!("{}", crate::common::stream::INTERVAL_HEADER);
+    println!(
+        "{}  receiver",
+        crate::common::stream::format_interval_row(
+            1,
+            0.0,
+            summary_duration.as_secs_f64(),
+            summary_bytes
+        ),
+    );
+    if cpu_usage.total_pct > 0.0 {
+        println!(
+            "CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
+            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
+        );
+    }
+    println!("rPerf3 Done.");
+    Ok(total_bytes)
 }
 
 /// Drive a single test session end-to-end. Returns the total bytes
 /// received across all data streams so callers (the binary's
 /// `run_server`, integration tests) can surface it.
-fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io::Result<u64> {
+fn serve_one_session(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io::Result<u64> {
     let (mut control, cookie) = accept_control(listener, handshake_timeout)?;
     let cpu_start = cpu::sample();
     let _ = cookie_display(&cookie);
@@ -207,7 +426,7 @@ fn run_tcp_branch(
     opts: &ClientOptions,
     handshake_timeout: Option<Duration>,
 ) -> io::Result<Vec<StreamReceipt>> {
-    let streams = accept_streams(control, listener, cookie, opts.parallel, handshake_timeout)?;
+    let streams = accept_streams_via_listener(control, listener, cookie, opts.parallel, handshake_timeout)?;
     send_test_start_running(control)?;
     println!("{}", crate::common::stream::INTERVAL_HEADER);
 
@@ -663,7 +882,10 @@ pub fn negotiate_options(control: &mut Protocol) -> io::Result<ClientOptions> {
 /// to the data socket while its cookie is read, then cleared so the
 /// reader thread can block on the test workload without a spurious
 /// timeout.
-pub fn accept_streams(
+///
+/// Used by the single-session path. For concurrent sessions use
+/// `crate::common::session::accept_streams_from_channel` instead.
+pub fn accept_streams_via_listener(
     control: &mut Protocol,
     listener: &TcpListener,
     expected_cookie: &[u8; COOKIE_LEN],
@@ -907,7 +1129,7 @@ mod tests {
         assert_eq!(opts.parallel, parallel);
 
         let streams =
-            accept_streams(&mut control, &listener, &cookie, opts.parallel, None).expect("streams");
+            accept_streams_via_listener(&mut control, &listener, &cookie, opts.parallel, None).expect("streams");
         assert_eq!(streams.len(), parallel as usize);
 
         client.join().expect("client thread");
@@ -949,7 +1171,7 @@ mod tests {
         let (mut control, _cookie) = accept_control(&listener, None).expect("accept control");
         let _ = negotiate_options(&mut control).expect("negotiate");
 
-        let err = match accept_streams(&mut control, &listener, &good, 1, None) {
+        let err = match accept_streams_via_listener(&mut control, &listener, &good, 1, None) {
             Ok(_) => panic!("expected cookie mismatch error"),
             Err(e) => e,
         };

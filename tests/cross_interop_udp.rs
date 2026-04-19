@@ -45,6 +45,8 @@ fn rperf3_client_talks_to_iperf3_server_udp() {
         omit: 0,
         transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Forward,
     };
     rperf3::run_client(client_cfg);

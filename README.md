@@ -37,6 +37,11 @@ client can talk to `rPerf3` server, the MVP is working.
   both sides send and receive on the same data streams concurrently.
   Works on TCP and UDP; interoperates with real iPerf3 in the
   rperf3-client → iperf3-server direction.
+- **Server loops by default + concurrent tests** (`-1`, `--max-concurrent N`).
+  The server now serves tests until killed (iperf3 default), `-1` restores
+  the old one-shot behavior, and `--max-concurrent N > 1` enables up to N
+  simultaneous tests multiplexed by cookie (TCP only — UDP concurrent
+  sessions are rejected with AccessDenied).
 
 ### Accuracy features
 
@@ -83,6 +88,8 @@ Options:
   -R, --reverse              Reverse direction — server sends, client receives
       --bidir                Bidirectional — both sides send and receive
   -O, --omit <OMIT>          Seconds to omit at the start of the test [default: 0]
+  -1, --one-off              Exit the server after one test (iperf3 -1 equivalent)
+      --max-concurrent <N>   Max concurrent sessions [default: 1]
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -96,6 +103,9 @@ cargo run --release -- -s -p 5202
 # Terminal B
 cargo run --release -- -c 127.0.0.1 -p 5202 -t 3 -P 2
 ```
+
+# Run the server indefinitely, handle up to 4 simultaneous tests
+cargo run --release -- -s -p 5202 --max-concurrent 4
 
 Or run the in-process self-test:
 
@@ -181,7 +191,6 @@ tests/
 
 ## Out of scope
 
-- Concurrent tests on a single server (one-shot only today)
 - Async/tokio runtime
 - TLS / authentication
 - Window size (`-w`) negotiation and reporting
