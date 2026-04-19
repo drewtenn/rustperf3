@@ -216,7 +216,32 @@ fn run_tcp_branch(
     control.transfer.set_read_timeout(run_timeout)?;
 
     let omit_window = Duration::from_secs(opts.omit as u64);
-    let receipts = if opts.reverse {
+    let receipts = if opts.bidirectional {
+        // Split each stream into a send half and a receive half via
+        // try_clone on the underlying TcpStream (full-duplex).
+        let mut send_protos = Vec::with_capacity(streams.len());
+        let mut recv_protos = Vec::with_capacity(streams.len());
+        for proto in streams {
+            let cloned = match proto.transfer.try_clone_tcp() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("bidir clone failed: {:?}", e);
+                    return Err(e);
+                }
+            };
+            send_protos.push(Protocol { transfer: cloned });
+            recv_protos.push(proto);
+        }
+        let send_opts = opts.clone();
+        let send_handle =
+            std::thread::spawn(move || run_tcp_send_streams(send_protos, &send_opts));
+        // Receive side drains inbound bytes concurrently.
+        let handles = spawn_stream_readers(recv_protos, omit_window);
+        wait_for_test_end(control)?;
+        let mut receipts = join_stream_totals(handles);
+        receipts.extend(send_handle.join().unwrap_or_default());
+        receipts
+    } else if opts.reverse {
         // Server is sender. Join all sender threads ourselves; the client
         // will send TestEnd when its receive duration elapses, so we still
         // wait_for_test_end on the control channel afterwards (non-blocking
@@ -322,7 +347,26 @@ fn run_udp_branch(
         .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
     control.transfer.set_read_timeout(run_timeout)?;
 
-    let receipts = if opts.reverse {
+    let receipts = if opts.bidirectional {
+        // Spawn both sender and receiver on cloned sockets.
+        let send_socket = udp.try_clone()?;
+        let recv_socket = udp;
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiver_stop = stop.clone();
+        let omit_window = Duration::from_secs(opts.omit as u64);
+        let recv_addrs = addrs.clone();
+        let recv_handle = std::thread::spawn(move || {
+            run_udp_receiver(recv_socket, recv_addrs, omit_window, receiver_stop)
+        });
+        // Sender runs on this thread and returns its own receipts.
+        let mut send_receipts = run_udp_send_streams(send_socket, addrs, opts);
+        // Best-effort TestEnd; then stop the receiver.
+        let _ = wait_for_test_end(control);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut recv_receipts = recv_handle.join().unwrap_or_default();
+        send_receipts.append(&mut recv_receipts);
+        send_receipts
+    } else if opts.reverse {
         run_udp_send_streams(udp, addrs, opts)
     } else {
         let stop = Arc::new(AtomicBool::new(false));

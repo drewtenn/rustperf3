@@ -44,7 +44,14 @@ pub struct Udp {
 impl Tcp {
 	pub fn new(stream: TcpStream) -> Self {
 		Self { stream }
-	 }
+	}
+
+	/// Return a second `Tcp` wrapper around a cloned TCP stream handle
+	/// so one thread can read while another writes on the same socket
+	/// (full-duplex). Used by bidirectional mode on the server side.
+	pub fn try_clone(&self) -> io::Result<Tcp> {
+		Ok(Tcp::new(self.stream.try_clone()?))
+	}
 }
 
 #[allow(dead_code)]
@@ -65,6 +72,15 @@ pub trait Socket {
 	/// connection was established. Linux-only (via getsockopt +
 	/// TCP_INFO); other platforms return `Unsupported`.
 	fn tcp_retransmits(&self) -> io::Result<u32>;
+	/// Clone the underlying TCP stream handle so a second thread can
+	/// write while this one reads (full-duplex). Only implemented for
+	/// `Tcp`; all other socket types return `Unsupported`.
+	fn try_clone_tcp(&self) -> io::Result<Box<dyn Socket + Send>> {
+		Err(io::Error::new(
+			io::ErrorKind::Unsupported,
+			"socket does not support clone",
+		))
+	}
 }
 
 impl Socket for Tcp {
@@ -72,6 +88,9 @@ impl Socket for Tcp {
 	fn send(&mut self, buf: &[u8]) -> io::Result<usize> { self.stream.write(buf) }
 	fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> { self.stream.set_nonblocking(nonblocking) }
 	fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> { self.stream.set_read_timeout(timeout) }
+	fn try_clone_tcp(&self) -> io::Result<Box<dyn Socket + Send>> {
+		Ok(Box::new(self.try_clone()?))
+	}
 	fn tcp_retransmits(&self) -> io::Result<u32> {
 		#[cfg(target_os = "linux")]
 		{ linux_tcp::total_retrans(&self.stream) }
