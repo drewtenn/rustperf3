@@ -247,6 +247,7 @@ tests/
 
 | Flag | Status | Notes |
 |------|--------|-------|
+| `--rsa-public-key`, `--username`, `--password`, `--rsa-private-key`, `--authorized-users` | **Ships in phase 6** ✅ | RSA-OAEP-SHA256 authentication. See Authentication section above. |
 | `-J` / `--json` | **Ships in phase 4** | Client-side end-of-test JSON. Server still prints text. |
 | `--logfile` | **Ships in phase 4** | Works on Unix via `dup2`. Non-unix stub. |
 | `-f` / `--format` | Parsed, no-op | Flag accepted; output still auto-scales. Follow-up work to wire unit through `format_interval_row`. |
@@ -270,7 +271,61 @@ tests/
 | `-Z` / `--zerocopy` | Parsed + stored (`zero_copy: bool`). `sendfile`-based impl is a follow-up. |
 | `-A` / `--affinity` | Parsed + stored. `sched_setaffinity` is Linux-only; follow-up. |
 
+## Authentication (Phase 6)
+
+rPerf3 implements iPerf3-compatible RSA-OAEP-SHA256 authentication. The
+client encrypts a `"{unix_ts}\n{username}\n{sha256hex(password)}"` payload
+with the server's RSA public key, base64-encodes it as `authtoken`, and
+includes it in the ParamExchange JSON. The server decrypts with its private
+key, validates the timestamp skew (≤ 10 s), and looks up the user in an
+authorized-users CSV file.
+
+### Server flags
+
+| Flag | Description |
+|------|-------------|
+| `--rsa-private-key <PEM>` | Path to the server's RSA private key (PKCS#8 or PKCS#1 PEM). When set, every client **must** supply a valid authtoken. |
+| `--authorized-users <CSV>` | Path to the authorized users file. Format: one `username,sha256hex_of_password` per line. Lines starting with `#` and blank lines are ignored. |
+
+Both flags must be set together; if only one is set auth is not enforced.
+
+### Client flags
+
+| Flag | Description |
+|------|-------------|
+| `--rsa-public-key <PEM>` | Path to the server's RSA public key (PKCS#8 SubjectPublicKeyInfo or PKCS#1 PEM). |
+| `--username <U>` | Username to authenticate as. |
+| `--password <P>` | Plaintext password. If omitted and `--rsa-public-key` is set, the password is prompted interactively (no echo). |
+
+### Quick start
+
+```bash
+# 1. Generate a 2048-bit RSA keypair
+openssl genpkey -algorithm RSA -out /tmp/server-priv.pem -pkeyopt rsa_keygen_bits:2048
+openssl rsa -in /tmp/server-priv.pem -pubout -out /tmp/server-pub.pem
+
+# 2. Create an authorized_users file with sha256 of "secret"
+echo "alice,$(printf secret | shasum -a 256 | awk '{print $1}')" > /tmp/authorized_users
+
+# 3. Start the server with auth
+./target/release/rperf3 -s -p 5201 \
+    --rsa-private-key /tmp/server-priv.pem \
+    --authorized-users /tmp/authorized_users
+
+# 4. Good password — succeeds
+./target/release/rperf3 -c 127.0.0.1 -p 5201 -t 1 \
+    --rsa-public-key /tmp/server-pub.pem \
+    --username alice \
+    --password secret
+
+# 5. Wrong password — server rejects with "access denied"
+./target/release/rperf3 -c 127.0.0.1 -p 5201 -t 1 \
+    --rsa-public-key /tmp/server-pub.pem \
+    --username alice \
+    --password wrong
+```
+
 ## Out of scope
 
 - Async/tokio runtime
-- TLS / authentication
+- TLS
