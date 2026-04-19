@@ -72,6 +72,7 @@ impl Stream {
         let tx = test.tx_channel.clone();
         let receipt_tx = test.receipt_tx.clone();
         let len = test.config.len as usize;
+        let json = test.config.json;
         // Total wall-clock budget for this stream = omit + time. iPerf3
         // treats omit as *additional* seconds on top of the measurement
         // window; rPerf3 does the same so cfg.time always reflects the
@@ -117,16 +118,18 @@ impl Stream {
                                 receipt.first_measured_at = Some(now);
                             }
 
-                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
-                                println!(
-                                    "{}",
-                                    format_interval_row(
-                                        snap.stream_id,
-                                        snap.start_sec,
-                                        snap.end_sec,
-                                        snap.bytes,
-                                    )
-                                );
+                            if !json {
+                                if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                    println!(
+                                        "{}",
+                                        format_interval_row(
+                                            snap.stream_id,
+                                            snap.start_sec,
+                                            snap.end_sec,
+                                            snap.bytes,
+                                        )
+                                    );
+                                }
                             }
                         }
                         Ok(_) => continue,
@@ -138,18 +141,20 @@ impl Stream {
                     }
                 }
 
-                if let Some(last) = receipt.last_send_at {
-                    if let Some(snap) = reporter.flush(last) {
-                        if snap.bytes > 0 {
-                            println!(
-                                "{}",
-                                format_interval_row(
-                                    snap.stream_id,
-                                    snap.start_sec,
-                                    snap.end_sec,
-                                    snap.bytes,
-                                )
-                            );
+                if !json {
+                    if let Some(last) = receipt.last_send_at {
+                        if let Some(snap) = reporter.flush(last) {
+                            if snap.bytes > 0 {
+                                println!(
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
+                                );
+                            }
                         }
                     }
                 }
@@ -282,6 +287,7 @@ impl Stream {
         let omit = Duration::from_secs(test.config.omit as u64);
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let buf_len = (test.config.len as usize).max(65_536);
+        let json = test.config.json;
 
         thread::spawn(move || {
             let mut receipt = ClientStreamReceipt::empty(stream_id);
@@ -315,7 +321,29 @@ impl Stream {
                                 receipt.first_measured_at = Some(now);
                             }
 
-                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                            if !json {
+                                if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                    println!(
+                                        "{}",
+                                        format_interval_row(
+                                            snap.stream_id,
+                                            snap.start_sec,
+                                            snap.end_sec,
+                                            snap.bytes,
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+
+                if !json {
+                    if let Some(last) = receipt.last_send_at {
+                        if let Some(snap) = reporter.flush(last) {
+                            if snap.bytes > 0 {
                                 println!(
                                     "{}",
                                     format_interval_row(
@@ -326,24 +354,6 @@ impl Stream {
                                     )
                                 );
                             }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    }
-                }
-
-                if let Some(last) = receipt.last_send_at {
-                    if let Some(snap) = reporter.flush(last) {
-                        if snap.bytes > 0 {
-                            println!(
-                                "{}",
-                                format_interval_row(
-                                    snap.stream_id,
-                                    snap.start_sec,
-                                    snap.end_sec,
-                                    snap.bytes,
-                                )
-                            );
                         }
                     }
                 }
@@ -362,6 +372,7 @@ impl Stream {
         let buf_len = (test.config.len as usize).max(65_536);
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let omit = Duration::from_secs(test.config.omit as u64);
+        let json = test.config.json;
 
         thread::spawn(move || {
             let mut receipt = ClientStreamReceipt::empty(stream_id);
@@ -407,16 +418,18 @@ impl Stream {
                             receipt.first_measured_at = Some(now);
                         }
 
-                        if let Some(snap) = reporter.on_bytes(n as u64, now) {
-                            println!(
-                                "{}",
-                                format_interval_row(
-                                    snap.stream_id,
-                                    snap.start_sec,
-                                    snap.end_sec,
-                                    snap.bytes,
-                                )
-                            );
+                        if !json {
+                            if let Some(snap) = reporter.on_bytes(n as u64, now) {
+                                println!(
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
+                                );
+                            }
                         }
                     }
                     Err(e)
