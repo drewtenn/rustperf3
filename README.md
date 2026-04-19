@@ -54,6 +54,14 @@ client can talk to `rPerf3` server, the MVP is working.
   output — text output still auto-scales.  See roadmap._
 - **Verbose / timestamps stubs (`-V`, `--timestamps`).**  Accepted for
   iperf3 CLI compatibility; no-op for now.  See roadmap.
+- **Title prefix (`-T / --title <LABEL>`).** Fully implemented. Every
+  interval row and summary row is prefixed with `LABEL:  ` so you can
+  distinguish runs when piping output from multiple simultaneous tests.
+- **Phase-5 knob flags (parsed stubs):** `-w` (window/buffer size), `-M`
+  (MSS), `-C` (congestion algorithm), `-S` (TOS byte), `-Z` (zero-copy),
+  `-n` (byte limit), `-k` (block limit), `-A` (CPU affinity). All 9 flags
+  parse and store correctly; socket-option application and termination
+  conditions are a Linux follow-up. See roadmap.
 
 ### Accuracy features
 
@@ -108,6 +116,19 @@ Options:
       --logfile <PATH>       Redirect all output to this file (append; unix only)
   -V, --verbose              Verbose output (no-op stub — accepted for iperf3 compat)
       --timestamps           Prefix lines with timestamps (no-op stub — accepted for iperf3 compat)
+
+Phase-5 knobs (all parsed; see roadmap for implementation status):
+  -T, --title <LABEL>        Prefix every output line with LABEL (FULLY IMPLEMENTED)
+  -w, --window <SIZE>        Socket buffer size, e.g. 256K (parsed stub — Linux follow-up)
+  -M, --set-mss <BYTES>      TCP maximum segment size (parsed stub — Linux follow-up)
+  -C, --congestion <ALG>     TCP congestion algorithm, e.g. bbr (parsed stub — Linux follow-up)
+  -S, --tos <VALUE>          IP type-of-service byte: decimal, 0x-hex, or 0-octal
+                             (parsed stub — Linux follow-up)
+  -Z, --zerocopy             Zero-copy mode (parsed stub — not yet implemented)
+  -n, --bytes <SIZE>         Stop after sending/receiving this many bytes (parsed stub)
+  -k, --blockcount <COUNT>   Stop after this many writes/blocks (parsed stub)
+  -A, --affinity <SPEC>      CPU affinity, e.g. 0,1 or 0-3 (parsed stub — Linux follow-up)
+
   -h, --help                 Print help
 ```
 
@@ -233,9 +254,23 @@ tests/
 | `--timestamps` | Parsed, no-op | Requires `chrono` dep; deferred. |
 | `--json-stream` | Not started | Per-interval JSON streaming. |
 | Server JSON | Not started | `-J` affects client only; server always prints text. |
+| **Phase 5 — knob parity** | **Partially shipped** | See below. |
+
+### Phase 5 detail
+
+| Flag | Status |
+|------|--------|
+| `-T` / `--title` | **Fully implemented.** `OnceLock<String>` in `stream.rs`; every interval and summary row is prefixed. |
+| `-w` / `--window` | Parsed + stored in `Config`. `parse_size()` helper in `bandwidth.rs`. Socket `SO_SNDBUF`/`SO_RCVBUF` application is a Linux follow-up. |
+| `-n` / `--bytes` | Parsed + stored. Termination-after-N-bytes logic is a follow-up. |
+| `-k` / `--blockcount` | Parsed + stored. Termination-after-N-blocks logic is a follow-up. |
+| `-M` / `--set-mss` | Parsed + stored. `TCP_MAXSEG setsockopt` is Linux-only; follow-up. |
+| `-C` / `--congestion` | Parsed + stored. `TCP_CONGESTION setsockopt` is Linux-only; follow-up. |
+| `-S` / `--tos` | Parsed (decimal / 0x-hex / 0-octal) + stored. `IP_TOS setsockopt` is a follow-up. |
+| `-Z` / `--zerocopy` | Parsed + stored (`zero_copy: bool`). `sendfile`-based impl is a follow-up. |
+| `-A` / `--affinity` | Parsed + stored. `sched_setaffinity` is Linux-only; follow-up. |
 
 ## Out of scope
 
 - Async/tokio runtime
 - TLS / authentication
-- Window size (`-w`) negotiation and reporting

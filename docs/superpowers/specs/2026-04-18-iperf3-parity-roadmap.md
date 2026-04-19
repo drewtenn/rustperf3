@@ -176,24 +176,36 @@ Every `println!` in `client.rs` and `server.rs` migrates to a reporter call. The
 
 ## Sub-project 5 — Knob parity
 
+**Status:** Partially shipped (2026-04-18). CLI parsing for all 9 knobs is
+complete. `-T / --title` is fully implemented (output-line prefixing via
+`OnceLock<String>` in `stream.rs`). Socket-option application and
+termination-condition logic are tracked as a follow-up.
+
 Each knob is a small independent slice: CLI flag → socket-option call (and/or `ClientOptions` field for server-side effect) → test.
 
-| Flag | Effect | Platform |
-|------|--------|----------|
-| `-w <size>` | `SO_SNDBUF`/`SO_RCVBUF`; print negotiated size after `getsockopt` | all |
-| `-M <mss>` | `TCP_MAXSEG` | Linux |
-| `-C <algo>` | `TCP_CONGESTION` (string setsockopt) | Linux |
-| `-S <tos>` | `IP_TOS` | all |
-| `-Z` | `sendfile` zero-copy on the send path | Linux |
-| `-n <bytes>` | byte-count test termination (mutually exclusive with `-t`) | all |
-| `-k <blocks>` | block-count termination | all |
-| `-T <title>` | prefix on output lines | all |
-| `-A <list>` | `sched_setaffinity` per stream worker | Linux |
-| `-b <rate>` (TCP) | TCP-side bandwidth cap via same token bucket as UDP | all |
+| Flag | Effect | Platform | Status |
+|------|--------|----------|--------|
+| `-T <title>` | prefix on output lines | all | **Fully implemented** |
+| `-w <size>` | `SO_SNDBUF`/`SO_RCVBUF`; print negotiated size after `getsockopt` | all | Parsed+stored; `setsockopt` follow-up |
+| `-n <bytes>` | byte-count test termination (mutually exclusive with `-t`) | all | Parsed+stored; termination logic follow-up |
+| `-k <blocks>` | block-count termination | all | Parsed+stored; termination logic follow-up |
+| `-M <mss>` | `TCP_MAXSEG` | Linux | Parsed+stored; Linux-only `setsockopt` follow-up |
+| `-C <algo>` | `TCP_CONGESTION` (string setsockopt) | Linux | Parsed+stored; Linux-only follow-up |
+| `-S <tos>` | `IP_TOS` | all | Parsed (dec/0x-hex/0-octal)+stored; `setsockopt` follow-up |
+| `-Z` | `sendfile` zero-copy on the send path | Linux | Parsed+stored; `sendfile` impl follow-up |
+| `-A <list>` | `sched_setaffinity` per stream worker | Linux | Parsed+stored; Linux-only follow-up |
+| `-b <rate>` (TCP) | TCP-side bandwidth cap via same token bucket as UDP | all | (pre-existing; not part of this phase) |
 
 Each knob that has a server-side visible effect adds a matching `ClientOptions` field so the server applies it when set by the client.
 
 Non-Linux: platform-gated behavior. Unsupported flags either refuse with a clear error (`-C`, `-M`, `-A`) or log "ignored on this platform" (`-Z`). Choice per flag documented in the implementation plan.
+
+**Follow-up work:**
+
+- `setsockopt` calls for `-w`, `-M`, `-C`, `-S` (behind `#[cfg(target_os = "linux")]` for MSS/congestion/affinity).
+- `sendfile`-based zero-copy send path for `-Z`.
+- Termination-after-N-bytes (`-n`) and termination-after-N-blocks (`-k`) in the stream-send loop.
+- `sched_setaffinity` per stream worker for `-A`.
 
 **Tests:**
 
