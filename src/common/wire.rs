@@ -73,6 +73,9 @@ pub struct ClientOptions {
     /// Terminate after this many blocks (-k). Only sent when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_blocks: Option<u64>,
+    /// RSA-OAEP-SHA256 encrypted authtoken (base64). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authtoken: Option<String>,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -98,6 +101,7 @@ impl ClientOptions {
             tos: None,
             total_bytes: None,
             total_blocks: None,
+            authtoken: None,
         }
     }
 }
