@@ -901,15 +901,23 @@ pub fn measured_steady_state(receipts: &[StreamReceipt]) -> Duration {
     }
 }
 
-/// Send ExchangeResults, receive the client's Results, then send ours.
-/// The server builds its `Results` from the per-stream byte totals the
-/// reader threads produced.
+/// Send ExchangeResults, immediately send our Results JSON, then read
+/// the client's Results JSON.
+///
+/// iperf3 3.21 sends its server-side JSON *before* waiting for the
+/// client to reciprocate — the client only sends its JSON after it has
+/// received the ExchangeResults byte. If the server waits to read the
+/// client JSON first (old behaviour) both sides block waiting for the
+/// other: a classic deadlock. Sending ours first breaks the deadlock
+/// because the client reads ExchangeResults, sends its JSON, then reads
+/// ours — which is already in-flight.
+///
+/// The DisplayResults byte is appended immediately after the server JSON
+/// so that iperf3 clients transition to their "display" state without
+/// waiting for a separate control-byte round-trip.
 ///
 /// iperf3 3.21 TCP clients may half-close the control channel before
-/// sending their Results JSON, so tolerate an early read EOF. We still
-/// try to send our Results JSON afterwards because the peer may be
-/// blocked reading it. The return value only reflects the *read* phase
-/// so the caller can decide whether to continue with DISPLAY_RESULTS.
+/// sending their Results JSON, so we tolerate read failures gracefully.
 pub fn exchange_results(
     control: &mut Protocol,
     receipts: &[StreamReceipt],
@@ -917,14 +925,19 @@ pub fn exchange_results(
 ) -> io::Result<()> {
     send_control_byte(control.transfer.as_mut(), Message::ExchangeResults)?;
 
-    let read_result: io::Result<Results> = recv_framed_json(control.transfer.as_mut());
-
-    // Always send our Results so the peer doesn't block reading them,
-    // even if the peer already half-closed.
+    // Send our results first so the client isn't blocked waiting for
+    // them (iperf3 3.21 reads server JSON before sending client JSON).
     let server_results = build_server_results(receipts, cpu);
     let _ = send_framed_json(control.transfer.as_mut(), &server_results);
 
-    read_result.map(|_| ())
+    // Now try to read the client's Results JSON (best-effort).
+    let read_result: io::Result<Results> = recv_framed_json(control.transfer.as_mut());
+    if let Err(ref e) = read_result {
+        if !is_peer_closed(e) {
+            return Err(io::Error::new(e.kind(), e.to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// Build the Results payload the server reports back. Per-stream bytes
