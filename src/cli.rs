@@ -31,6 +31,7 @@ pub const DEFAULT_UDP_BANDWIDTH_BPS: u64 = 1_000_000;
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[command(name = "rperf3", version, about = "rPerf3 — a Rust iPerf3-compatible client/server")]
+#[command(disable_version_flag = true)]
 #[command(group(
     ArgGroup::new("mode")
         .required(true)

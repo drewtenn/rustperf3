@@ -12,6 +12,7 @@ pub mod direction;
 pub mod cpu;
 pub mod format;
 pub mod interval;
+pub mod json_output;
 pub mod jitter;
 pub mod pacing;
 pub mod protocol;
