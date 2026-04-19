@@ -474,6 +474,96 @@ fn self_test_concurrent_three_clients() {
 }
 
 #[test]
+fn self_test_concurrent_three_udp_clients() {
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_config = rperf3::Config {
+        host: "127.0.0.1".into(),
+        port,
+        time: 1,
+        parallel: 1,
+        len: 1400,
+        omit: 0,
+        transport: rperf3::TransportKind::Udp,
+        bandwidth: 10_000_000,
+        direction: rperf3::Direction::Forward,
+        one_off: false,
+        max_concurrent: 4,
+        json: false,
+        format_unit: None,
+        logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
+        username: None,
+        password: None,
+        rsa_public_key: None,
+        rsa_private_key: None,
+        authorized_users: None,
+    };
+
+    let server = thread::spawn(move || {
+        let _ = rperf3::run_server_loop(listener, &server_config, None);
+    });
+
+    thread::sleep(Duration::from_millis(200));
+
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let port_c = port;
+        clients.push(thread::spawn(move || {
+            let cfg = rperf3::Config {
+                host: "127.0.0.1".into(),
+                port: port_c,
+                time: 1,
+                parallel: 1,
+                len: 1400,
+                omit: 0,
+                transport: rperf3::TransportKind::Udp,
+                bandwidth: 10_000_000,
+                direction: rperf3::Direction::Forward,
+                one_off: false,
+                max_concurrent: 1,
+                json: false,
+                format_unit: None,
+                logfile: None,
+                window_size: None,
+                mss: None,
+                congestion: None,
+                tos: None,
+                zero_copy: false,
+                total_bytes: None,
+                total_blocks: None,
+                title: None,
+                affinity: None,
+                username: None,
+                password: None,
+                rsa_public_key: None,
+                rsa_private_key: None,
+                authorized_users: None,
+            };
+            rperf3::run_client(cfg);
+        }));
+    }
+
+    for c in clients {
+        c.join().expect("client panicked");
+    }
+
+    // Server thread runs an infinite accept loop; drop without joining.
+    drop(server);
+}
+
+#[test]
 fn self_test_loopback_udp_bidir() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();

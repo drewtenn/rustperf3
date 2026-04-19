@@ -46,6 +46,11 @@ pub enum Message {
     DisplayResults = 14,
     IperfStart = 15,
     IperfDone = 16,
+    /// rPerf3 extension: server sends this byte followed by a 2-byte
+    /// big-endian port number to tell the client which ephemeral UDP
+    /// port to direct its data streams at. Only used in concurrent mode
+    /// (max_concurrent > 1) for UDP sessions.
+    SetDataPort = 17,
     AccessDenied = -1,
     ServerError = -2,
 }
@@ -95,6 +100,7 @@ mod tests {
             Message::DisplayResults,
             Message::IperfStart,
             Message::IperfDone,
+            Message::SetDataPort,
             Message::AccessDenied,
             Message::ServerError,
         ];
