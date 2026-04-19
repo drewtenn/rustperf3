@@ -22,6 +22,11 @@ pub const CLIENT_VERSION: &str = "3.1.3";
 /// Default bytes per write for TCP tests, matching iPerf3's default.
 pub const DEFAULT_TCP_LEN: usize = 131_072;
 
+/// Maximum accepted control-channel JSON frame size. Normal iPerf3
+/// option/result payloads are tiny; this keeps a malicious peer from
+/// forcing an unbounded allocation by advertising a huge frame length.
+pub const MAX_JSON_FRAME_LEN: usize = 16 * 1024 * 1024;
+
 /// Options sent during ParamExchange.
 ///
 /// Field names are lowercase to match iPerf3's wire format.
@@ -139,6 +144,12 @@ pub fn recv_framed_json<T: DeserializeOwned>(sock: &mut dyn Socket) -> io::Resul
     let mut len_buf = [0u8; 4];
     read_exact(sock, &mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_JSON_FRAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("JSON frame too large: {} bytes", len),
+        ));
+    }
 
     let mut body = vec![0u8; len];
     read_exact(sock, &mut body)?;
@@ -351,6 +362,21 @@ mod tests {
 
         let err: io::Error = recv_framed_json::<Results>(&mut mock).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn recv_framed_json_rejects_oversized_frame_before_body_read() {
+        let mut mock = MockSocket::new();
+        let oversized = (MAX_JSON_FRAME_LEN as u32 + 1).to_be_bytes().to_vec();
+        seed_recv(&mock, vec![oversized]);
+
+        let err: io::Error = recv_framed_json::<Results>(&mut mock).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            mock.recv_queue.lock().unwrap().len(),
+            0,
+            "only the length prefix should be consumed"
+        );
     }
 
     #[test]

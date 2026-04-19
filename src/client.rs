@@ -25,6 +25,8 @@ fn client_recv(test: &mut Test) -> bool {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => eprintln!("control recv error: {:?}", e),
         }
+    } else {
+        return true;
     }
     false
 }
@@ -348,6 +350,12 @@ mod tests {
     fn build_client_results_is_empty_on_no_receipts() {
         let r = build_client_results(&[], &CpuUsage::ZERO);
         assert!(r.streams.is_empty());
+    }
+
+    #[test]
+    fn client_recv_stops_when_control_channel_is_missing() {
+        let mut test = Test::new(Config::with_host("127.0.0.1"));
+        assert!(client_recv(&mut test));
     }
 
     #[test]
