@@ -160,6 +160,19 @@ pub fn recv_control_byte(sock: &mut dyn Socket) -> io::Result<Message> {
     })
 }
 
+/// Send a 2-byte big-endian unsigned integer. Used with `SetDataPort` to
+/// communicate the server's ephemeral UDP port to the client.
+pub fn send_u16_be(sock: &mut dyn Socket, value: u16) -> io::Result<()> {
+    write_all(sock, &value.to_be_bytes())
+}
+
+/// Read a 2-byte big-endian unsigned integer. Pair of `send_u16_be`.
+pub fn recv_u16_be(sock: &mut dyn Socket) -> io::Result<u16> {
+    let mut buf = [0u8; 2];
+    read_exact(sock, &mut buf)?;
+    Ok(u16::from_be_bytes(buf))
+}
+
 /// Serialize `value` to JSON and send it prefixed with a 4-byte
 /// big-endian length.
 pub fn send_framed_json<T: Serialize>(sock: &mut dyn Socket, value: &T) -> io::Result<()> {

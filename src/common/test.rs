@@ -208,6 +208,10 @@ pub struct Test {
 	/// CPU-time snapshot taken at the start of the test for the
 	/// client-side Results.cpu_util_* fields.
 	pub cpu_start: Option<CpuSnapshot>,
+	/// rPerf3 extension: when the server sends `SetDataPort` in concurrent
+	/// UDP mode, this overrides the port used for UDP data streams. `None`
+	/// means use the same port as the TCP control channel (legacy behavior).
+	pub data_port_override: Option<u16>,
 }
 
 impl Test {
@@ -229,6 +233,7 @@ impl Test {
 			receipts: Vec::new(),
 			cpu_start: None,
 			state: Message::TestStart,
+			data_port_override: None,
 		}
 	}
 

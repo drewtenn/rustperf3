@@ -1,7 +1,18 @@
 use std::{net::TcpStream, net::UdpSocket, io::{Write, Read, self}, time::Duration};
+use std::os::unix::io::AsRawFd;
 
 pub struct Protocol {
 	pub transfer : Box<dyn Socket + Send>,
+}
+
+/// Socket-level tuning options applied after a connection is established.
+/// Mirrors the CLI knobs `-w` (window), `-M` (MSS), `-C` (congestion), `-S` (TOS).
+#[derive(Debug, Clone, Default)]
+pub struct TuningOpts {
+    pub window_size: Option<u32>,
+    pub mss: Option<u32>,
+    pub congestion: Option<String>,
+    pub tos: Option<u8>,
 }
 
 impl Protocol {
@@ -81,6 +92,12 @@ pub trait Socket {
 			"socket does not support clone",
 		))
 	}
+	/// Apply socket-level tuning options (buffer sizes, TOS, MSS,
+	/// congestion algorithm). The default no-op is correct for all
+	/// non-TCP socket types; `Tcp` overrides with `setsockopt` calls.
+	fn apply_tuning(&self, _opts: &TuningOpts) -> io::Result<()> {
+		Ok(())
+	}
 }
 
 impl Socket for Tcp {
@@ -96,6 +113,99 @@ impl Socket for Tcp {
 		{ linux_tcp::total_retrans(&self.stream) }
 		#[cfg(not(target_os = "linux"))]
 		{ Err(io::Error::new(io::ErrorKind::Unsupported, "TCP_INFO not available on this platform")) }
+	}
+
+	fn apply_tuning(&self, opts: &TuningOpts) -> io::Result<()> {
+		let fd = self.stream.as_raw_fd();
+
+		if let Some(w) = opts.window_size {
+			let size: libc::c_int = w as libc::c_int;
+			let r = unsafe {
+				libc::setsockopt(
+					fd,
+					libc::SOL_SOCKET,
+					libc::SO_SNDBUF,
+					&size as *const _ as *const libc::c_void,
+					std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+				)
+			};
+			if r != 0 {
+				eprintln!("SO_SNDBUF failed: {}", io::Error::last_os_error());
+			}
+			let r = unsafe {
+				libc::setsockopt(
+					fd,
+					libc::SOL_SOCKET,
+					libc::SO_RCVBUF,
+					&size as *const _ as *const libc::c_void,
+					std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+				)
+			};
+			if r != 0 {
+				eprintln!("SO_RCVBUF failed: {}", io::Error::last_os_error());
+			}
+		}
+
+		if let Some(tos) = opts.tos {
+			let val: libc::c_int = tos as libc::c_int;
+			let r = unsafe {
+				libc::setsockopt(
+					fd,
+					libc::IPPROTO_IP,
+					libc::IP_TOS,
+					&val as *const _ as *const libc::c_void,
+					std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+				)
+			};
+			if r != 0 {
+				eprintln!("IP_TOS failed: {}", io::Error::last_os_error());
+			}
+		}
+
+		#[cfg(target_os = "linux")]
+		{
+			if let Some(mss) = opts.mss {
+				let size: libc::c_int = mss as libc::c_int;
+				let r = unsafe {
+					libc::setsockopt(
+						fd,
+						libc::IPPROTO_TCP,
+						libc::TCP_MAXSEG,
+						&size as *const _ as *const libc::c_void,
+						std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+					)
+				};
+				if r != 0 {
+					eprintln!("TCP_MAXSEG failed: {}", io::Error::last_os_error());
+				}
+			}
+			if let Some(algo) = &opts.congestion {
+				let bytes = algo.as_bytes();
+				let r = unsafe {
+					libc::setsockopt(
+						fd,
+						libc::IPPROTO_TCP,
+						libc::TCP_CONGESTION,
+						bytes.as_ptr() as *const libc::c_void,
+						bytes.len() as libc::socklen_t,
+					)
+				};
+				if r != 0 {
+					eprintln!("TCP_CONGESTION failed: {}", io::Error::last_os_error());
+				}
+			}
+		}
+		#[cfg(not(target_os = "linux"))]
+		{
+			if opts.mss.is_some() {
+				eprintln!("warning: -M/--set-mss is Linux-only; ignoring");
+			}
+			if opts.congestion.is_some() {
+				eprintln!("warning: -C/--congestion is Linux-only; ignoring");
+			}
+		}
+
+		Ok(())
 	}
 }
 
@@ -306,6 +416,20 @@ mod tests {
 
 		assert!(mock.set_read_timeout(None).is_ok());
 		assert_eq!(mock.read_timeout, Some(None));
+	}
+
+	#[test]
+	fn tuning_sets_recv_buffer() {
+		use std::net::{TcpListener, TcpStream};
+		let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+		let addr = listener.local_addr().unwrap();
+		let client_thread = std::thread::spawn(move || {
+			TcpStream::connect(addr).expect("connect");
+		});
+		let (stream, _) = listener.accept().expect("accept");
+		let tcp = Tcp::new(stream);
+		tcp.apply_tuning(&TuningOpts { window_size: Some(131072), ..Default::default() }).unwrap();
+		client_thread.join().unwrap();
 	}
 
 	#[test]

@@ -25,6 +25,7 @@ use super::cookie::COOKIE_LEN;
 use super::format;
 use super::interval::IntervalReporter;
 use super::pacing::TokenBucket;
+use super::protocol::TuningOpts;
 use super::test::ClientStreamReceipt;
 use super::udp_header::{UdpHeader, UDP_HEADER_LEN};
 use super::{connect, protocol::Protocol, test::Test, timer::Timer, Message};
@@ -98,6 +99,16 @@ impl Stream {
         // reported number.
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let omit = Duration::from_secs(test.config.omit as u64);
+        // Capture tuning options before spawning — Config fields are all
+        // Send, and cloning locals avoids threading the whole Config.
+        let tuning = TuningOpts {
+            window_size: test.config.window_size,
+            mss: test.config.mss,
+            congestion: test.config.congestion.clone(),
+            tos: test.config.tos,
+        };
+        let max_bytes = test.config.total_bytes;
+        let max_blocks = test.config.total_blocks;
 
         thread::spawn(move || {
             let mut receipt = ClientStreamReceipt::empty(stream_id);
@@ -112,12 +123,23 @@ impl Stream {
                     emit_stream_finished(&receipt_tx, receipt, &tx);
                     return;
                 }
+                let _ = protocol.transfer.apply_tuning(&tuning);
                 stream.protocol = Some(protocol);
 
                 let timer = Timer::new();
                 let tx_buffer = build_payload(len);
 
                 while !should_stop(&timer, duration) {
+                    if let Some(mb) = max_bytes {
+                        if receipt.bytes_sent >= mb {
+                            break;
+                        }
+                    }
+                    if let Some(mb) = max_blocks {
+                        if (receipt.bytes_sent / len as u64) >= mb {
+                            break;
+                        }
+                    }
                     match stream.send_data(&tx_buffer) {
                         Ok(n) if n > 0 => {
                             let now = Instant::now();
@@ -197,6 +219,8 @@ impl Stream {
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let omit = Duration::from_secs(test.config.omit as u64);
         let bandwidth = test.config.bandwidth;
+        let max_bytes = test.config.total_bytes;
+        let max_blocks = test.config.total_blocks;
 
         thread::spawn(move || {
             let mut receipt = ClientStreamReceipt::empty(stream_id);
@@ -232,6 +256,16 @@ impl Stream {
             let mut seq: i64 = 0;
 
             while !should_stop(&timer, duration) {
+                if let Some(mb) = max_bytes {
+                    if receipt.bytes_sent >= mb {
+                        break;
+                    }
+                }
+                if let Some(mb) = max_blocks {
+                    if (receipt.bytes_sent / len as u64) >= mb {
+                        break;
+                    }
+                }
                 let now = Instant::now();
                 if let Some(wait) = bucket.wait(now) {
                     std::thread::sleep(wait);
@@ -307,6 +341,12 @@ impl Stream {
         let duration = Duration::from_secs((test.config.time + test.config.omit) as u64);
         let buf_len = (test.config.len as usize).max(65_536);
         let json = test.config.json;
+        let tuning = TuningOpts {
+            window_size: test.config.window_size,
+            mss: test.config.mss,
+            congestion: test.config.congestion.clone(),
+            tos: test.config.tos,
+        };
 
         thread::spawn(move || {
             let mut receipt = ClientStreamReceipt::empty(stream_id);
@@ -319,6 +359,7 @@ impl Stream {
                     emit_stream_finished(&receipt_tx, receipt, &tx);
                     return;
                 }
+                let _ = protocol.transfer.apply_tuning(&tuning);
 
                 let mut buf = vec![0u8; buf_len];
                 while !should_stop(&timer, duration) {

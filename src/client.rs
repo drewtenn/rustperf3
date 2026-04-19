@@ -3,8 +3,8 @@ use crate::common::cpu::{self, CpuUsage};
 use crate::common::stream::{self, Stream};
 use crate::common::test::{Config, Test};
 use crate::common::wire::{
-    self, recv_control_byte, recv_framed_json, send_control_byte, send_framed_json, ClientOptions,
-    Results, StreamResults,
+    self, recv_control_byte, recv_framed_json, recv_u16_be, send_control_byte, send_framed_json,
+    ClientOptions, Results, StreamResults,
 };
 use crate::common::{connect, Message};
 
@@ -121,6 +121,23 @@ fn handle_message_client(test: &mut Test, message: Message) -> bool {
         Message::AccessDenied => {
             eprintln!("error: server rejected connection (access denied)");
             is_done = true;
+        }
+
+        Message::SetDataPort => {
+            // rPerf3 extension: server tells us which ephemeral UDP port to
+            // use for data streams in concurrent mode. Read the 2-byte
+            // big-endian port that immediately follows this control byte.
+            // The control socket is in non-blocking mode, so we briefly
+            // switch to blocking to guarantee a complete 2-byte read.
+            if let Some(protocol) = test.control_channel.as_mut() {
+                let _ = protocol.transfer.set_nonblocking(false);
+                let result = recv_u16_be(protocol.transfer.as_mut());
+                let _ = protocol.transfer.set_nonblocking(true);
+                match result {
+                    Ok(port) => test.data_port_override = Some(port),
+                    Err(e) => eprintln!("failed to read SetDataPort payload: {:?}", e),
+                }
+            }
         }
 
         _ => eprintln!("Received unknown control message."),
@@ -328,23 +345,31 @@ pub fn client_measured_duration(
 }
 
 fn create_streams(test: &Test) {
-    let host = test.config.host_port();
+    // For UDP in concurrent mode the server may have assigned an ephemeral
+    // port via SetDataPort. Use that if present, otherwise fall back to the
+    // control-channel port (single-session / iperf3-compat path).
+    let data_port = test
+        .data_port_override
+        .unwrap_or(test.config.port);
+    let data_host = format!("{}:{}", test.config.host, data_port);
+    let control_host = test.config.host_port();
+
     let n = test.config.parallel.max(1);
     let is_udp = test.config.transport.is_udp();
     let dir = test.config.direction;
     for stream_id in 1..=n {
         if dir.client_sends() {
             if is_udp {
-                Stream::start_udp(test, host.clone(), test.cookie, stream_id);
+                Stream::start_udp(test, data_host.clone(), test.cookie, stream_id);
             } else {
-                Stream::start(test, host.clone(), test.cookie, stream_id);
+                Stream::start(test, control_host.clone(), test.cookie, stream_id);
             }
         }
         if dir.client_receives() {
             if is_udp {
-                Stream::start_udp_recv(test, host.clone(), test.cookie, stream_id);
+                Stream::start_udp_recv(test, data_host.clone(), test.cookie, stream_id);
             } else {
-                Stream::start_recv(test, host.clone(), test.cookie, stream_id);
+                Stream::start_recv(test, control_host.clone(), test.cookie, stream_id);
             }
         }
     }
@@ -375,6 +400,12 @@ fn send_options(test: &mut Test) {
     }
     options.reverse = test.config.direction.is_reverse();
     options.bidirectional = test.config.direction.is_bidirectional();
+    options.window_size = test.config.window_size;
+    options.mss = test.config.mss;
+    options.congestion = test.config.congestion.clone();
+    options.tos = test.config.tos;
+    options.total_bytes = test.config.total_bytes;
+    options.total_blocks = test.config.total_blocks;
 
     // Attach RSA authtoken when a public key and username are configured.
     if let (Some(pk_path), Some(user)) = (&test.config.rsa_public_key, &test.config.username) {

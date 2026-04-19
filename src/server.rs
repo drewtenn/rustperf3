@@ -18,12 +18,12 @@ use crate::common::auth;
 use crate::common::cookie::{recv_cookie, COOKIE_LEN};
 use crate::common::cpu::{self, CpuUsage};
 use crate::common::interval::IntervalReporter;
-use crate::common::protocol::{Protocol, Tcp};
+use crate::common::protocol::{Protocol, Tcp, TuningOpts};
 use crate::common::test::Config;
 use crate::common::udp_session::{accept_udp_streams, bind_udp, run_udp_receiver};
 use crate::common::wire::{
-    recv_control_byte, recv_framed_json, send_control_byte, send_framed_json, ClientOptions,
-    Results, StreamResults,
+    recv_control_byte, recv_framed_json, send_control_byte, send_framed_json, send_u16_be,
+    ClientOptions, Results, StreamResults,
 };
 use crate::common::Message;
 
@@ -222,9 +222,10 @@ pub fn run_server_on_timeout(
 /// onto its own thread. In that mode `one_off` is ignored — use
 /// `--max-concurrent 1` together with `--one-off` for the one-shot path.
 ///
-/// UDP is not supported in concurrent mode; UDP sessions are rejected
-/// with `AccessDenied` and a follow-up is needed to multiplex UDP
-/// across sessions.
+/// UDP is supported in concurrent mode via an rPerf3 extension: each session
+/// gets its own ephemeral UDP socket, and its port is communicated to the
+/// client via `SetDataPort` on the control channel. iperf3 cross-interop in
+/// concurrent UDP mode is not supported.
 pub fn run_server_loop(
     listener: TcpListener,
     config: &Config,
@@ -254,8 +255,10 @@ pub fn run_server_loop(
 ///   registry not full), or
 /// * Sends `AccessDenied` and closes the connection (registry full).
 ///
-/// UDP sessions are rejected immediately with `AccessDenied`; concurrent
-/// UDP multiplexing is a planned follow-up.
+/// UDP sessions are now supported in concurrent mode: each session binds its
+/// own ephemeral UDP socket and communicates the port to the client via
+/// `SetDataPort`. This is an rPerf3-only extension; iperf3 interop in
+/// concurrent UDP mode is not supported.
 fn run_concurrent_accept_loop(
     listener: TcpListener,
     handshake_timeout: Option<Duration>,
@@ -309,8 +312,10 @@ fn run_concurrent_accept_loop(
 /// the concurrent accept loop. The control `Protocol` and data-stream
 /// `Receiver` are bundled in `session`.
 ///
-/// UDP is not supported in concurrent mode — if the client negotiates
-/// UDP, `AccessDenied` is sent and an error is returned.
+/// UDP sessions in concurrent mode are supported via an rPerf3 extension:
+/// the server binds an ephemeral UDP port, sends its number to the client
+/// via `SetDataPort` + u16-be, then runs the normal UDP branch on that
+/// socket. iperf3 cross-interop in concurrent UDP mode is not supported.
 fn serve_session_from_channel(
     mut session: crate::common::session::Session,
     handshake_timeout: Option<Duration>,
@@ -320,15 +325,109 @@ fn serve_session_from_channel(
     check_auth(&mut session.control, &opts)?;
 
     if opts.udp {
-        // Concurrent UDP not supported — reject and bail out.
-        let _ = send_control_byte(
-            session.control.transfer.as_mut(),
-            Message::AccessDenied,
+        // Bind an ephemeral UDP socket for this session so multiple
+        // concurrent sessions don't fight over the same port.
+        let udp = bind_udp("0.0.0.0:0", handshake_timeout)?;
+        let data_port = udp.local_addr()?.port();
+
+        // Tell the client which port to send data to.
+        send_control_byte(session.control.transfer.as_mut(), Message::SetDataPort)?;
+        send_u16_be(session.control.transfer.as_mut(), data_port)?;
+
+        // Now run the normal UDP branch against our ephemeral socket.
+        send_control_byte(session.control.transfer.as_mut(), Message::CreateStreams)?;
+        let addrs = accept_udp_streams(&udp, &session.cookie, opts.parallel)?;
+        udp.set_read_timeout(None)?;
+
+        send_test_start_running(&mut session.control)?;
+        println!("{}", crate::common::stream::INTERVAL_HEADER);
+
+        let run_timeout =
+            handshake_timeout.map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
+        session.control.transfer.set_read_timeout(run_timeout)?;
+
+        let omit_window = Duration::from_secs(opts.omit as u64);
+        let receipts = if opts.bidirectional {
+            let send_socket = udp.try_clone()?;
+            let recv_socket = udp;
+            let stop = Arc::new(AtomicBool::new(false));
+            let receiver_stop = stop.clone();
+            let recv_addrs = addrs.clone();
+            let recv_handle = std::thread::spawn(move || {
+                run_udp_receiver(recv_socket, recv_addrs, omit_window, receiver_stop)
+            });
+            let mut send_receipts = run_udp_send_streams(send_socket, addrs, &opts);
+            let _ = wait_for_test_end(&mut session.control);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let mut recv_receipts = recv_handle.join().unwrap_or_default();
+            send_receipts.append(&mut recv_receipts);
+            send_receipts
+        } else if opts.reverse {
+            let r = run_udp_send_streams(udp, addrs, &opts);
+            let _ = wait_for_test_end(&mut session.control);
+            r
+        } else {
+            let stop = Arc::new(AtomicBool::new(false));
+            let receiver_stop = stop.clone();
+            let handle = std::thread::spawn(move || {
+                run_udp_receiver(udp, addrs, omit_window, receiver_stop)
+            });
+            wait_for_test_end(&mut session.control)?;
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            handle.join().unwrap_or_default()
+        };
+        if opts.reverse {
+            let _ = wait_for_test_end(&mut session.control);
+        }
+
+        let total_bytes: u64 = receipts.iter().map(|r| r.bytes).sum();
+        let measured_bytes: u64 = receipts.iter().map(|r| r.bytes_measured()).sum();
+        let raw = measured_duration(&receipts);
+        let steady = measured_steady_state(&receipts);
+
+        session.control.transfer.set_read_timeout(handshake_timeout)?;
+        let wall = if !steady.is_zero() {
+            steady
+        } else if !raw.is_zero() {
+            raw
+        } else {
+            Duration::ZERO
+        };
+        let cpu_end = cpu::sample();
+        let cpu_usage = cpu::usage(&cpu_start, &cpu_end, wall);
+
+        if let Err(e) = exchange_results(&mut session.control, &receipts, &cpu_usage) {
+            if !is_peer_closed(&e) {
+                return Err(e);
+            }
+        }
+        if let Err(e) = finalize_test(&mut session.control) {
+            if !is_peer_closed(&e) {
+                return Err(e);
+            }
+        }
+
+        let (summary_bytes, summary_duration) = if opts.omit > 0 && !steady.is_zero() {
+            (measured_bytes, steady)
+        } else if !raw.is_zero() {
+            (total_bytes, raw)
+        } else {
+            (total_bytes, Duration::from_secs(opts.time as u64))
+        };
+
+        println!("{}", crate::common::stream::SUMMARY_SEPARATOR);
+        println!("{}", crate::common::stream::INTERVAL_HEADER);
+        println!(
+            "{}  receiver",
+            crate::common::stream::prefix_title(crate::common::stream::format_interval_row(
+                1,
+                0.0,
+                summary_duration.as_secs_f64(),
+                summary_bytes
+            )),
         );
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "concurrent UDP sessions not supported; use --max-concurrent 1",
-        ));
+        println!("rPerf3 Done.");
+        return Ok(total_bytes);
     }
 
     // TCP path: tell the client to open data streams, then pull them
@@ -340,6 +439,16 @@ fn serve_session_from_channel(
         opts.parallel,
         handshake_timeout,
     )?;
+    // Apply socket tuning the client negotiated.
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    for s in &streams {
+        let _ = s.transfer.apply_tuning(&tuning);
+    }
     send_test_start_running(&mut session.control)?;
     println!("{}", crate::common::stream::INTERVAL_HEADER);
 
@@ -507,6 +616,16 @@ fn run_tcp_branch(
     handshake_timeout: Option<Duration>,
 ) -> io::Result<Vec<StreamReceipt>> {
     let streams = accept_streams_via_listener(control, listener, cookie, opts.parallel, handshake_timeout)?;
+    // Apply socket tuning options the client negotiated.
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    for s in &streams {
+        let _ = s.transfer.apply_tuning(&tuning);
+    }
     send_test_start_running(control)?;
     println!("{}", crate::common::stream::INTERVAL_HEADER);
 
@@ -569,19 +688,39 @@ fn run_tcp_send_streams(
     let duration = Duration::from_secs((opts.time + opts.omit) as u64);
     let omit = Duration::from_secs(opts.omit as u64);
     let len = opts.len as usize;
+    let tuning = TuningOpts {
+        window_size: opts.window_size,
+        mss: opts.mss,
+        congestion: opts.congestion.clone(),
+        tos: opts.tos,
+    };
+    let max_bytes = opts.total_bytes;
+    let max_blocks = opts.total_blocks;
 
     let handles: Vec<_> = streams
         .into_iter()
         .enumerate()
         .map(|(i, mut proto)| {
             let stream_id = (i + 1) as u32;
+            let tuning = tuning.clone();
             std::thread::spawn(move || {
                 let _ = proto.transfer.set_nonblocking(false);
+                let _ = proto.transfer.apply_tuning(&tuning);
                 let mut receipt = StreamReceipt::empty();
                 let mut reporter = IntervalReporter::new(stream_id, Duration::from_secs(1));
                 let timer = Timer::new();
                 let buf = build_payload(len);
                 while !timer.is_elapsed(duration) {
+                    if let Some(mb) = max_bytes {
+                        if receipt.bytes >= mb {
+                            break;
+                        }
+                    }
+                    if let Some(mb) = max_blocks {
+                        if (receipt.bytes / len as u64) >= mb {
+                            break;
+                        }
+                    }
                     match proto.transfer.send(&buf) {
                         Ok(n) if n > 0 => {
                             let now = Instant::now();
@@ -861,15 +1000,23 @@ pub fn measured_steady_state(receipts: &[StreamReceipt]) -> Duration {
     }
 }
 
-/// Send ExchangeResults, receive the client's Results, then send ours.
-/// The server builds its `Results` from the per-stream byte totals the
-/// reader threads produced.
+/// Send ExchangeResults, immediately send our Results JSON, then read
+/// the client's Results JSON.
+///
+/// iperf3 3.21 sends its server-side JSON *before* waiting for the
+/// client to reciprocate — the client only sends its JSON after it has
+/// received the ExchangeResults byte. If the server waits to read the
+/// client JSON first (old behaviour) both sides block waiting for the
+/// other: a classic deadlock. Sending ours first breaks the deadlock
+/// because the client reads ExchangeResults, sends its JSON, then reads
+/// ours — which is already in-flight.
+///
+/// The DisplayResults byte is appended immediately after the server JSON
+/// so that iperf3 clients transition to their "display" state without
+/// waiting for a separate control-byte round-trip.
 ///
 /// iperf3 3.21 TCP clients may half-close the control channel before
-/// sending their Results JSON, so tolerate an early read EOF. We still
-/// try to send our Results JSON afterwards because the peer may be
-/// blocked reading it. The return value only reflects the *read* phase
-/// so the caller can decide whether to continue with DISPLAY_RESULTS.
+/// sending their Results JSON, so we tolerate read failures gracefully.
 pub fn exchange_results(
     control: &mut Protocol,
     receipts: &[StreamReceipt],
@@ -877,14 +1024,19 @@ pub fn exchange_results(
 ) -> io::Result<()> {
     send_control_byte(control.transfer.as_mut(), Message::ExchangeResults)?;
 
-    let read_result: io::Result<Results> = recv_framed_json(control.transfer.as_mut());
-
-    // Always send our Results so the peer doesn't block reading them,
-    // even if the peer already half-closed.
+    // Send our results first so the client isn't blocked waiting for
+    // them (iperf3 3.21 reads server JSON before sending client JSON).
     let server_results = build_server_results(receipts, cpu);
     let _ = send_framed_json(control.transfer.as_mut(), &server_results);
 
-    read_result.map(|_| ())
+    // Now try to read the client's Results JSON (best-effort).
+    let read_result: io::Result<Results> = recv_framed_json(control.transfer.as_mut());
+    if let Err(ref e) = read_result {
+        if !is_peer_closed(e) {
+            return Err(io::Error::new(e.kind(), e.to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// Build the Results payload the server reports back. Per-stream bytes
