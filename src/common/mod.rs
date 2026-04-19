@@ -6,6 +6,7 @@ use self::protocol::Protocol;
 pub use direction::Direction;
 pub use transport_kind::TransportKind;
 
+pub mod auth;
 pub mod bandwidth;
 pub mod cookie;
 pub mod direction;
