@@ -9,13 +9,17 @@ use crate::common::{connect, Message};
 
 pub fn run_client(config: Config) {
     let mut test = Test::new(config);
-    println!("Connecting to host {}, port {}", test.config.host, test.config.port);
+    if !test.config.json {
+        println!("Connecting to host {}, port {}", test.config.host, test.config.port);
+    }
     let host_port = test.config.host_port();
     test.control_channel = connect(host_port, &test.cookie);
     test.cpu_start = Some(cpu::sample());
 
     client_loop(&mut test);
-    println!("rPerf3 Done.");
+    if !test.config.json {
+        println!("rPerf3 Done.");
+    }
 }
 
 fn client_recv(test: &mut Test) -> bool {
@@ -95,7 +99,9 @@ fn handle_message_client(test: &mut Test, message: Message) -> bool {
 
         Message::TestRunning => {
             test.is_running = true;
-            println!("{}", stream::INTERVAL_HEADER);
+            if !test.config.json {
+                println!("{}", stream::INTERVAL_HEADER);
+            }
         }
 
         Message::ExchangeResults => {
@@ -132,10 +138,6 @@ fn exchange_results(test: &mut Test) {
     };
     let client_results = build_client_results(&test.receipts, &cpu_usage);
 
-    // iPerf3-style summary rows: separator + sender + receiver.
-    println!("{}", stream::SUMMARY_SEPARATOR);
-    println!("{}", stream::INTERVAL_HEADER);
-
     let steady = client_measured_duration(&test.receipts);
     let session = client_session_duration(&test.receipts).unwrap_or(std::time::Duration::ZERO);
     let (sender_bytes, sender_duration) = if test.config.omit > 0 && !steady.is_zero() {
@@ -153,18 +155,25 @@ fn exchange_results(test: &mut Test) {
     let retransmits: u64 = test.receipts.iter().map(|r| r.retransmits as u64).sum();
 
     let dir = test.config.direction;
-    let client_role = if dir.is_bidirectional() {
-        "sender"
-    } else if dir.is_reverse() {
-        "receiver"
-    } else {
-        "sender"
-    };
-    println!(
-        "{}  {}",
-        stream::format_interval_row(1, 0.0, sender_secs, sender_bytes),
-        client_role,
-    );
+
+    // Text summary (suppressed when --json is active).
+    if !test.config.json {
+        let client_role = if dir.is_bidirectional() {
+            "sender"
+        } else if dir.is_reverse() {
+            "receiver"
+        } else {
+            "sender"
+        };
+
+        println!("{}", stream::SUMMARY_SEPARATOR);
+        println!("{}", stream::INTERVAL_HEADER);
+        println!(
+            "{}  {}",
+            stream::format_interval_row(1, 0.0, sender_secs, sender_bytes),
+            client_role,
+        );
+    }
 
     // Server-side receiver row comes from the exchanged Results payload.
     // We build it best-effort after actually reading the peer's results.
@@ -182,39 +191,74 @@ fn exchange_results(test: &mut Test) {
         return;
     }
 
-    let server_role = if dir.is_bidirectional() {
-        "receiver"
-    } else if dir.is_reverse() {
-        "sender"
-    } else {
-        "receiver"
-    };
-    match recv_framed_json::<Results>(protocol.transfer.as_mut()) {
-        Ok(server) => {
-            let bytes = server.streams.iter().map(|s| s.bytes).sum::<u64>();
-            println!(
-                "{}  {}",
-                stream::format_interval_row(1, 0.0, sender_secs, bytes),
-                server_role,
-            );
-        }
-        Err(e) => eprintln!("could not receive/parse server results: {:?}", e),
-    }
+    let server_result = recv_framed_json::<Results>(protocol.transfer.as_mut());
 
     if let Err(e) = protocol.transfer.set_nonblocking(true) {
         eprintln!("failed to restore non-blocking after results read: {:?}", e);
     }
 
-    // Optional extras, kept compact so they don't interfere with the
-    // iPerf3-like table above.
-    if retransmits > 0 {
-        println!("TCP retransmits: {}", retransmits);
-    }
-    if cpu_usage.total_pct > 0.0 {
-        println!(
-            "CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
-            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
-        );
+    match server_result {
+        Ok(server) => {
+            let server_bytes = server.streams.iter().map(|s| s.bytes).sum::<u64>();
+
+            if test.config.json {
+                // Emit iperf3-compatible JSON summary instead of text table.
+                use crate::common::json_output::{
+                    render, JsonConnectingTo, JsonEnd, JsonOutput, JsonStart, JsonSum,
+                    JsonTestStart,
+                };
+                let j = JsonOutput {
+                    start: JsonStart {
+                        connecting_to: Some(JsonConnectingTo {
+                            host: test.config.host.clone(),
+                            port: test.config.port,
+                        }),
+                        test_start: JsonTestStart {
+                            protocol: if test.config.transport.is_udp() {
+                                "UDP".into()
+                            } else {
+                                "TCP".into()
+                            },
+                            num_streams: test.config.parallel,
+                            blksize: test.config.len,
+                            duration: test.config.time,
+                            reverse: u32::from(dir.is_reverse()),
+                            bidir: u32::from(dir.is_bidirectional()),
+                        },
+                    },
+                    end: JsonEnd {
+                        sum_sent: JsonSum::new(sender_bytes, sender_secs),
+                        sum_received: JsonSum::new(server_bytes, sender_secs),
+                    },
+                };
+                println!("{}", render(&j));
+            } else {
+                let server_role = if dir.is_bidirectional() {
+                    "receiver"
+                } else if dir.is_reverse() {
+                    "sender"
+                } else {
+                    "receiver"
+                };
+                println!(
+                    "{}  {}",
+                    stream::format_interval_row(1, 0.0, sender_secs, server_bytes),
+                    server_role,
+                );
+
+                // Optional extras (text mode only).
+                if retransmits > 0 {
+                    println!("TCP retransmits: {}", retransmits);
+                }
+                if cpu_usage.total_pct > 0.0 {
+                    println!(
+                        "CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
+                        cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
+                    );
+                }
+            }
+        }
+        Err(e) => eprintln!("could not receive/parse server results: {:?}", e),
     }
 }
 

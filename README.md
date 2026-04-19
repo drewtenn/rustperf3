@@ -42,6 +42,18 @@ client can talk to `rPerf3` server, the MVP is working.
   the old one-shot behavior, and `--max-concurrent N > 1` enables up to N
   simultaneous tests multiplexed by cookie (TCP only — UDP concurrent
   sessions are rejected with AccessDenied).
+- **JSON output (`-J`).**  After the test the client emits a
+  pretty-printed JSON object shaped like iperf3's `-J` output:
+  `start.connecting_to`, `start.test_start`, `end.sum_sent`, and
+  `end.sum_received` are all populated.  Pipe to `jq` or parse
+  in scripts.  Text output is suppressed when `-J` is active.
+- **Logfile (`--logfile <PATH>`).**  Redirects all stdout output (text or
+  JSON) to the specified file (append mode).  Works on any Unix platform.
+- **Format flag (`-f <unit>`).**  Accepted for iperf3 CLI compatibility
+  (`k`, `K`, `m`, `M`, `g`, `G`).  _Parsed but not yet applied to
+  output — text output still auto-scales.  See roadmap._
+- **Verbose / timestamps stubs (`-V`, `--timestamps`).**  Accepted for
+  iperf3 CLI compatibility; no-op for now.  See roadmap.
 
 ### Accuracy features
 
@@ -90,8 +102,13 @@ Options:
   -O, --omit <OMIT>          Seconds to omit at the start of the test [default: 0]
   -1, --one-off              Exit the server after one test (iperf3 -1 equivalent)
       --max-concurrent <N>   Max concurrent sessions [default: 1]
+  -J, --json                 Emit iperf3-compatible end-of-test JSON (suppresses text output)
+  -f, --format <UNIT>        Force format unit for text output: k K m M g G
+                             (parsed for iperf3 compat; auto-scale still used — see roadmap)
+      --logfile <PATH>       Redirect all output to this file (append; unix only)
+  -V, --verbose              Verbose output (no-op stub — accepted for iperf3 compat)
+      --timestamps           Prefix lines with timestamps (no-op stub — accepted for iperf3 compat)
   -h, --help                 Print help
-  -V, --version              Print version
 ```
 
 ### Test against itself
@@ -180,6 +197,7 @@ src/
     cookie.rs          session cookie generation and wire reading
     cpu.rs             /proc/self/stat CPU sampling (Linux)
     interval.rs        per-second rolling interval reporter
+    json_output.rs     iperf3-compatible JSON output structs + render()
     protocol.rs        Socket trait, TCP/UDP wrappers, test MockSocket
     stream.rs          data-stream worker thread
     test.rs            Test + Config + per-stream receipts
@@ -188,6 +206,33 @@ src/
 tests/
   self_test.rs         end-to-end loopback tests (data flow, omit, timeout)
 ```
+
+### JSON output example
+
+```bash
+./target/release/rperf3 -s -p 5212 &
+./target/release/rperf3 -c 127.0.0.1 -p 5212 -t 1 -J | jq .end.sum_sent
+```
+
+```json
+{
+  "bytes": 16777216,
+  "seconds": 0.98,
+  "bits_per_second": 137005034.5
+}
+```
+
+## Roadmap / known stubs
+
+| Flag | Status | Notes |
+|------|--------|-------|
+| `-J` / `--json` | **Ships in phase 4** | Client-side end-of-test JSON. Server still prints text. |
+| `--logfile` | **Ships in phase 4** | Works on Unix via `dup2`. Non-unix stub. |
+| `-f` / `--format` | Parsed, no-op | Flag accepted; output still auto-scales. Follow-up work to wire unit through `format_interval_row`. |
+| `-V` / `--verbose` | Parsed, no-op | Accepted for iperf3 CLI compat. |
+| `--timestamps` | Parsed, no-op | Requires `chrono` dep; deferred. |
+| `--json-stream` | Not started | Per-interval JSON streaming. |
+| Server JSON | Not started | `-J` affects client only; server always prints text. |
 
 ## Out of scope
 

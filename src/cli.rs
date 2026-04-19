@@ -31,6 +31,7 @@ pub const DEFAULT_UDP_BANDWIDTH_BPS: u64 = 1_000_000;
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[command(name = "rperf3", version, about = "rPerf3 — a Rust iPerf3-compatible client/server")]
+#[command(disable_version_flag = true)]
 #[command(group(
     ArgGroup::new("mode")
         .required(true)
@@ -93,6 +94,26 @@ pub struct Cli {
     /// Run in bidirectional mode. Both sides send and receive simultaneously.
     #[arg(long = "bidir")]
     pub bidir: bool,
+
+    /// Emit end-of-test JSON output (iperf3-compatible shape).
+    #[arg(short = 'J', long = "json")]
+    pub json: bool,
+
+    /// Force a specific format unit for text output (k, K, m, M, g, G).
+    #[arg(short = 'f', long = "format")]
+    pub format: Option<char>,
+
+    /// Redirect all output to this file.
+    #[arg(long = "logfile")]
+    pub logfile: Option<std::path::PathBuf>,
+
+    /// Verbose output (currently a no-op stub — accepted for iperf3 CLI compat).
+    #[arg(short = 'V', long = "verbose")]
+    pub verbose: bool,
+
+    /// Prefix each output line with a timestamp (currently a no-op stub).
+    #[arg(long = "timestamps")]
+    pub timestamps: bool,
 }
 
 /// Result of a successful parse: either client or server mode, each
@@ -140,6 +161,9 @@ impl Cli {
             one_off: self.one_off,
             max_concurrent: self.max_concurrent.max(1),
             direction,
+            json: self.json,
+            format_unit: self.format,
+            logfile: self.logfile,
         };
         Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
     }
@@ -349,5 +373,38 @@ mod tests {
             Mode::Server(cfg) => assert_eq!(cfg.max_concurrent, 4),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn parses_json_flag() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-J"]).unwrap();
+        assert!(cli.json);
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert!(cfg.json),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn parses_format_flag() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-f", "M"]).unwrap();
+        assert_eq!(cli.format, Some('M'));
+        match cli.into_mode() {
+            Mode::Client(cfg) => assert_eq!(cfg.format_unit, Some('M')),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn parses_logfile_flag() {
+        let cli = Cli::try_parse_from(["rperf3", "-s", "--logfile", "/tmp/out.log"]).unwrap();
+        assert!(cli.logfile.is_some());
+    }
+
+    #[test]
+    fn parses_verbose_and_timestamps_stubs() {
+        let cli = Cli::try_parse_from(["rperf3", "-c", "h", "-V", "--timestamps"]).unwrap();
+        assert!(cli.verbose);
+        assert!(cli.timestamps);
     }
 }
