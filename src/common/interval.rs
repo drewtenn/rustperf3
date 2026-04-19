@@ -22,10 +22,21 @@ pub struct IntervalSnapshot {
 }
 
 impl IntervalSnapshot {
+    /// Duration of this interval in seconds, floored to a tiny positive
+    /// value to avoid divide-by-zero in the throughput helpers.
+    pub fn duration_secs(&self) -> f64 {
+        (self.end_sec - self.start_sec).max(0.000_001)
+    }
+
     /// Throughput during this interval in Mbits/sec.
     pub fn mbits_per_sec(&self) -> f64 {
-        let dur = (self.end_sec - self.start_sec).max(0.000_001);
-        (self.bytes as f64 * 8.0) / 1_000_000.0 / dur
+        self.bits_per_sec() / 1_000_000.0
+    }
+
+    /// Throughput during this interval in bits/sec (for the
+    /// `format::bitrate_bps` helper).
+    pub fn bits_per_sec(&self) -> f64 {
+        (self.bytes as f64 * 8.0) / self.duration_secs()
     }
 }
 

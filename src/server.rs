@@ -109,7 +109,9 @@ pub fn run_server(config: Config) {
             return;
         }
     };
-    println!("rperf server listening on {}", bind_addr);
+    println!("-----------------------------------------------------------");
+    println!("Server listening on {}", config.port);
+    println!("-----------------------------------------------------------");
 
     if let Err(e) = run_server_on(listener) {
         eprintln!("server session ended with error: {:?}", e);
@@ -142,10 +144,9 @@ pub fn run_server_on_timeout(
 fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io::Result<u64> {
     let (mut control, cookie) = accept_control(listener, handshake_timeout)?;
     let cpu_start = cpu::sample();
-    println!("control connection cookie: {}", cookie_display(&cookie));
+    let _ = cookie_display(&cookie);
 
     let opts = negotiate_options(&mut control)?;
-    println!("negotiated options: {:?}", opts);
 
     let receipts = if opts.udp {
         run_udp_branch(&mut control, listener, &cookie, &opts, handshake_timeout)?
@@ -157,40 +158,19 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
     let measured_bytes: u64 = receipts.iter().map(|r| r.bytes_measured()).sum();
     let raw = measured_duration(&receipts);
     let steady = measured_steady_state(&receipts);
-    println!(
-        "total bytes received: {} ({} post-omit) across {} stream(s) over {:.6}s (steady-state {:.6}s)",
-        total_bytes, measured_bytes, receipts.len(),
-        raw.as_secs_f64(), steady.as_secs_f64(),
-    );
 
     control.transfer.set_read_timeout(handshake_timeout)?;
     let wall = if !steady.is_zero() { steady } else if !raw.is_zero() { raw } else { Duration::ZERO };
     let cpu_end = cpu::sample();
     let cpu_usage = cpu::usage(&cpu_start, &cpu_end, wall);
-    if cpu_usage.total_pct > 0.0 {
-        println!(
-            "[SERVER] CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
-            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
-        );
-    }
 
-    // iperf3 3.21 TCP clients may half-close the control channel
-    // around TEST_END, so tolerate early EOF on the results exchange.
-    // We still send DISPLAY_RESULTS afterwards because iperf3 waits on
-    // it to transition to its own end-of-test state before exiting.
     if let Err(e) = exchange_results(&mut control, &receipts, &cpu_usage) {
-        if is_peer_closed(&e) {
-            eprintln!("results exchange: peer closed early ({})", e);
-        } else {
+        if !is_peer_closed(&e) {
             return Err(e);
         }
-    } else {
-        println!("results exchanged");
     }
     if let Err(e) = finalize_test(&mut control) {
-        if is_peer_closed(&e) {
-            eprintln!("finalize: peer closed early ({})", e);
-        } else {
+        if !is_peer_closed(&e) {
             return Err(e);
         }
     }
@@ -202,7 +182,21 @@ fn serve_one(listener: &TcpListener, handshake_timeout: Option<Duration>) -> io:
     } else {
         (total_bytes, Duration::from_secs(opts.time as u64))
     };
-    print_summary(&format_summary(summary_bytes, summary_duration, receipts.len()));
+
+    // iPerf3-style sender/receiver summary block.
+    println!("{}", crate::common::stream::SUMMARY_SEPARATOR);
+    println!("{}", crate::common::stream::INTERVAL_HEADER);
+    println!(
+        "{}  receiver",
+        crate::common::stream::format_interval_row(1, 0.0, summary_duration.as_secs_f64(), summary_bytes),
+    );
+    if cpu_usage.total_pct > 0.0 {
+        println!(
+            "CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
+            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
+        );
+    }
+    println!("iperf Done.");
     Ok(total_bytes)
 }
 
@@ -214,9 +208,8 @@ fn run_tcp_branch(
     handshake_timeout: Option<Duration>,
 ) -> io::Result<Vec<StreamReceipt>> {
     let streams = accept_streams(control, listener, cookie, opts.parallel, handshake_timeout)?;
-    println!("accepted {} data stream(s)", streams.len());
     send_test_start_running(control)?;
-    println!("test is running");
+    println!("{}", crate::common::stream::INTERVAL_HEADER);
 
     let run_timeout = handshake_timeout
         .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
@@ -241,11 +234,11 @@ fn run_udp_branch(
 
     send_control_byte(control.transfer.as_mut(), Message::CreateStreams)?;
     let addrs = accept_udp_streams(&udp, cookie, opts.parallel)?;
-    println!("accepted {} udp stream(s)", addrs.len());
 
     udp.set_read_timeout(None)?;
 
     send_test_start_running(control)?;
+    println!("{}", crate::common::stream::INTERVAL_HEADER);
 
     let run_timeout = handshake_timeout
         .map(|h| h + Duration::from_secs((opts.time + opts.omit) as u64));
@@ -278,19 +271,18 @@ pub fn finalize_test(control: &mut Protocol) -> io::Result<()> {
     }
 }
 
-/// Produce a human-readable summary line. Isolated so it's trivially
-/// testable without touching stdout.
+/// Produce a human-readable summary line. Retained for external callers
+/// / legacy tests that compose their own `[SUMMARY]` prefix; the
+/// interactive output uses `stream::format_interval_row` directly.
 pub fn format_summary(total_bytes: u64, duration: std::time::Duration, streams: usize) -> String {
     let secs = duration.as_secs_f64().max(0.000_001);
-    let mbits = (total_bytes as f64 * 8.0) / 1_000_000.0 / secs;
     format!(
-        "received {} bytes across {} stream(s) in {:.2}s ({:.2} Mbits/sec)",
-        total_bytes, streams, secs, mbits
+        "{} across {} stream(s) in {:.2}s ({})",
+        crate::common::format::bytes(total_bytes),
+        streams,
+        secs,
+        crate::common::format::bitrate(total_bytes, secs),
     )
-}
-
-fn print_summary(line: &str) {
-    println!("[SUMMARY] {}", line);
 }
 
 /// Block on the control channel until the client sends `TestEnd`. Any
@@ -514,12 +506,13 @@ pub fn recv_stream_bytes(
                 if let Some(r) = reporter.as_mut() {
                     if let Some(snap) = r.on_bytes(n as u64, now) {
                         println!(
-                            "[SRV {}] {:.2}-{:.2} sec  {} bytes  {:.2} Mbits/sec",
-                            snap.stream_id,
-                            snap.start_sec,
-                            snap.end_sec,
-                            snap.bytes,
-                            snap.mbits_per_sec(),
+                            "{}",
+                            crate::common::stream::format_interval_row(
+                                snap.stream_id,
+                                snap.start_sec,
+                                snap.end_sec,
+                                snap.bytes,
+                            )
                         );
                     }
                 }
@@ -533,12 +526,13 @@ pub fn recv_stream_bytes(
         if let Some(snap) = receipt.last_byte_at.and_then(|t| r.flush(t)) {
             if snap.bytes > 0 {
                 println!(
-                    "[SRV {}] {:.2}-{:.2} sec  {} bytes  {:.2} Mbits/sec (final)",
-                    snap.stream_id,
-                    snap.start_sec,
-                    snap.end_sec,
-                    snap.bytes,
-                    snap.mbits_per_sec(),
+                    "{}",
+                    crate::common::stream::format_interval_row(
+                        snap.stream_id,
+                        snap.start_sec,
+                        snap.end_sec,
+                        snap.bytes,
+                    )
                 );
             }
         }
@@ -996,9 +990,10 @@ mod tests {
     #[test]
     fn format_summary_contains_bytes_and_throughput() {
         let line = format_summary(10_000_000, std::time::Duration::from_secs(1), 1);
-        assert!(line.contains("10000000"));
+        // Human-readable output now: "9.54 MBytes across 1 stream(s) in 1.00s (80.00 Mbits/sec)".
+        assert!(line.contains("MBytes"));
         assert!(line.contains("stream"));
-        assert!(line.contains("Mbits/sec"));
+        assert!(line.contains("bits/sec"));
     }
 
     #[test]

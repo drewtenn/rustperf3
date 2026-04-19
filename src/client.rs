@@ -1,5 +1,5 @@
 use crate::common::cpu::{self, CpuUsage};
-use crate::common::stream::Stream;
+use crate::common::stream::{self, Stream};
 use crate::common::test::{Config, Test};
 use crate::common::wire::{
     self, recv_control_byte, recv_framed_json, send_control_byte, send_framed_json, ClientOptions,
@@ -9,11 +9,13 @@ use crate::common::{connect, Message};
 
 pub fn run_client(config: Config) {
     let mut test = Test::new(config);
+    println!("Connecting to host {}, port {}", test.config.host, test.config.port);
     let host_port = test.config.host_port();
     test.control_channel = connect(host_port, &test.cookie);
     test.cpu_start = Some(cpu::sample());
 
     client_loop(&mut test);
+    println!("iperf Done.");
 }
 
 fn client_recv(test: &mut Test) -> bool {
@@ -76,38 +78,32 @@ fn handle_message_client(test: &mut Test, message: Message) -> bool {
 
     match message {
         Message::ParamExchange => {
-            println!("Received parameter exchange control message.");
             send_options(test);
         }
 
         Message::CreateStreams => {
-            println!("Received create streams control message.");
             create_streams(test);
         }
 
         Message::TestStart => {
             test.is_started = true;
-            println!("Received test start control message.")
         }
 
         Message::TestRunning => {
             test.is_running = true;
-            println!("Received test running control message.")
+            println!("{}", stream::INTERVAL_HEADER);
         }
 
         Message::ExchangeResults => {
-            println!("Received exchange results control message.");
             exchange_results(test);
         }
 
         Message::DisplayResults => {
-            println!("Received display results control message.");
             send_iperf_done(test);
             is_done = true;
         }
 
         Message::IperfDone => {
-            println!("Received done control message.");
             is_done = true;
         }
 
@@ -130,50 +126,35 @@ fn exchange_results(test: &mut Test) {
         }
         None => CpuUsage::ZERO,
     };
-    if cpu_usage.total_pct > 0.0 {
-        println!(
-            "[CLIENT] CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
-            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
-        );
-    }
     let client_results = build_client_results(&test.receipts, &cpu_usage);
 
-    if let Some(duration) = client_session_duration(&test.receipts) {
-        let total: u64 = test.receipts.iter().map(|r| r.bytes_sent).sum();
-        let measured: u64 = test.receipts.iter().map(|r| r.bytes_measured()).sum();
-        let retransmits: u64 = test.receipts.iter().map(|r| r.retransmits as u64).sum();
-        let steady = client_measured_duration(&test.receipts);
-        let raw_mbits =
-            (total as f64 * 8.0) / 1_000_000.0 / duration.as_secs_f64().max(0.000_001);
+    // iPerf3-style summary rows: separator + sender + receiver.
+    println!("{}", stream::SUMMARY_SEPARATOR);
+    println!("{}", stream::INTERVAL_HEADER);
 
-        if retransmits > 0 {
-            println!("[CLIENT] TCP retransmits observed: {}", retransmits);
-        }
+    let steady = client_measured_duration(&test.receipts);
+    let session = client_session_duration(&test.receipts).unwrap_or(std::time::Duration::ZERO);
+    let (sender_bytes, sender_duration) = if test.config.omit > 0 && !steady.is_zero() {
+        (
+            test.receipts.iter().map(|r| r.bytes_measured()).sum::<u64>(),
+            steady,
+        )
+    } else {
+        (
+            test.receipts.iter().map(|r| r.bytes_sent).sum::<u64>(),
+            session,
+        )
+    };
+    let sender_secs = sender_duration.as_secs_f64();
+    let retransmits: u64 = test.receipts.iter().map(|r| r.retransmits as u64).sum();
 
-        if test.config.omit > 0 && steady.as_secs_f64() > 0.0 {
-            let steady_mbits =
-                (measured as f64 * 8.0) / 1_000_000.0 / steady.as_secs_f64().max(0.000_001);
-            println!(
-                "[CLIENT] sent {} bytes ({} post-omit) across {} stream(s); raw {:.6}s ({:.2} Mbits/sec), steady-state {:.6}s ({:.2} Mbits/sec)",
-                total,
-                measured,
-                test.receipts.len(),
-                duration.as_secs_f64(),
-                raw_mbits,
-                steady.as_secs_f64(),
-                steady_mbits,
-            );
-        } else {
-            println!(
-                "[CLIENT] sent {} bytes across {} stream(s) in {:.6}s ({:.2} Mbits/sec)",
-                total,
-                test.receipts.len(),
-                duration.as_secs_f64(),
-                raw_mbits,
-            );
-        }
-    }
+    println!(
+        "{}  sender",
+        stream::format_interval_row(1, 0.0, sender_secs, sender_bytes),
+    );
 
+    // Server-side receiver row comes from the exchanged Results payload.
+    // We build it best-effort after actually reading the peer's results.
     let Some(ref mut protocol) = test.control_channel else {
         return;
     };
@@ -182,7 +163,6 @@ fn exchange_results(test: &mut Test) {
         eprintln!("failed to send results: {:?}", e);
         return;
     }
-    println!("Results sent.");
 
     if let Err(e) = protocol.transfer.set_nonblocking(false) {
         eprintln!("failed to set blocking for results read: {:?}", e);
@@ -190,12 +170,30 @@ fn exchange_results(test: &mut Test) {
     }
 
     match recv_framed_json::<Results>(protocol.transfer.as_mut()) {
-        Ok(parsed) => println!("server results: {:?}", parsed),
+        Ok(server) => {
+            let bytes = server.streams.iter().map(|s| s.bytes).sum::<u64>();
+            println!(
+                "{}  receiver",
+                stream::format_interval_row(1, 0.0, sender_secs, bytes),
+            );
+        }
         Err(e) => eprintln!("could not receive/parse server results: {:?}", e),
     }
 
     if let Err(e) = protocol.transfer.set_nonblocking(true) {
         eprintln!("failed to restore non-blocking after results read: {:?}", e);
+    }
+
+    // Optional extras, kept compact so they don't interfere with the
+    // iPerf3-like table above.
+    if retransmits > 0 {
+        println!("TCP retransmits: {}", retransmits);
+    }
+    if cpu_usage.total_pct > 0.0 {
+        println!(
+            "CPU: {:.2}% total ({:.2}% user, {:.2}% system)",
+            cpu_usage.total_pct, cpu_usage.user_pct, cpu_usage.system_pct,
+        );
     }
 }
 
@@ -293,16 +291,14 @@ fn send_options(test: &mut Test) {
     if options.udp {
         options.tcp = false;
     }
-    match send_framed_json(protocol.transfer.as_mut(), &options) {
-        Ok(()) => println!("Options sent."),
-        Err(e) => eprintln!("failed to send options: {:?}", e),
+    if let Err(e) = send_framed_json(protocol.transfer.as_mut(), &options) {
+        eprintln!("failed to send options: {:?}", e);
     }
 }
 
-fn log_send(result: std::io::Result<()>, success: &str, what: &str) {
-    match result {
-        Ok(()) => println!("{}", success),
-        Err(e) => eprintln!("failed to send {}: {:?}", what, e),
+fn log_send(result: std::io::Result<()>, _success: &str, what: &str) {
+    if let Err(e) = result {
+        eprintln!("failed to send {}: {:?}", what, e);
     }
 }
 

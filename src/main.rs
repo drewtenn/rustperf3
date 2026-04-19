@@ -9,6 +9,4 @@ fn main() {
         Mode::Client(config) => rperf::run_client(config),
         Mode::Server(config) => rperf::run_server(config),
     }
-
-    println!("Finished.");
 }

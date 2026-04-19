@@ -3,11 +3,47 @@ use std::sync::mpsc;
 use std::{thread, time::{Duration, Instant}};
 
 use super::cookie::COOKIE_LEN;
+use super::format;
 use super::interval::IntervalReporter;
 use super::pacing::TokenBucket;
 use super::test::ClientStreamReceipt;
 use super::udp_header::{UdpHeader, UDP_HEADER_LEN};
 use super::{connect, protocol::Protocol, test::Test, timer::Timer, Message};
+
+/// One-line iPerf3-compatible header for the interval table printed at
+/// the start of a test run.
+pub const INTERVAL_HEADER: &str = "[ ID] Interval           Transfer     Bitrate";
+
+/// 49-column dashed separator iPerf3 prints between the per-interval
+/// rows and the summary rows.
+pub const SUMMARY_SEPARATOR: &str = "- - - - - - - - - - - - - - - - - - - - - - - - -";
+
+/// Render one interval row the way iPerf3 does, e.g.
+/// `[  5]   0.00-1.00   sec  128 MBytes   1.07 Gbits/sec`.
+pub fn format_interval_row(stream_id: u32, start_sec: f64, end_sec: f64, bytes: u64) -> String {
+    let secs = (end_sec - start_sec).max(0.000_001);
+    let bitrate = (bytes as f64 * 8.0) / secs;
+    format!(
+        "[{:>3}] {:>6.2}-{:<5.2} sec  {:>10}  {:>14}",
+        stream_id,
+        start_sec,
+        end_sec,
+        format::bytes(bytes),
+        format::bitrate_bps(bitrate),
+    )
+}
+
+/// Summary row with a trailing role suffix (`sender` or `receiver`),
+/// matching iPerf3's end-of-test output.
+pub fn format_summary_row(
+    stream_id: u32,
+    start_sec: f64,
+    end_sec: f64,
+    bytes: u64,
+    role: &str,
+) -> String {
+    format!("{}  {}", format_interval_row(stream_id, start_sec, end_sec, bytes), role)
+}
 
 #[derive(Default)]
 pub struct Stream {
@@ -83,12 +119,13 @@ impl Stream {
 
                             if let Some(snap) = reporter.on_bytes(n as u64, now) {
                                 println!(
-                                    "[CLI {}] {:.2}-{:.2} sec  {} bytes  {:.2} Mbits/sec",
-                                    snap.stream_id,
-                                    snap.start_sec,
-                                    snap.end_sec,
-                                    snap.bytes,
-                                    snap.mbits_per_sec(),
+                                    "{}",
+                                    format_interval_row(
+                                        snap.stream_id,
+                                        snap.start_sec,
+                                        snap.end_sec,
+                                        snap.bytes,
+                                    )
                                 );
                             }
                         }
@@ -105,12 +142,13 @@ impl Stream {
                     if let Some(snap) = reporter.flush(last) {
                         if snap.bytes > 0 {
                             println!(
-                                "[CLI {}] {:.2}-{:.2} sec  {} bytes  {:.2} Mbits/sec (final)",
-                                snap.stream_id,
-                                snap.start_sec,
-                                snap.end_sec,
-                                snap.bytes,
-                                snap.mbits_per_sec(),
+                                "{}",
+                                format_interval_row(
+                                    snap.stream_id,
+                                    snap.start_sec,
+                                    snap.end_sec,
+                                    snap.bytes,
+                                )
                             );
                         }
                     }
