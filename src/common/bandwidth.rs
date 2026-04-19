@@ -2,6 +2,45 @@
 //! Accepts integer bits-per-second with optional K/M/G suffix (case-
 //! insensitive). Returns bps. "0" (or "") means unlimited.
 
+/// Parse a size string with optional K/M/G suffix using binary (1024-based)
+/// multipliers.  Used for buffer sizes (-w) and byte counts (-n).
+///
+/// Examples: "256K" → 262144, "1M" → 1048576, "1G" → 1073741824, "4096" → 4096.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    if s.is_empty() {
+        return Ok(0);
+    }
+    let (num_part, mult): (&str, u64) = match s.as_bytes().last() {
+        Some(b'k') | Some(b'K') => (&s[..s.len() - 1], 1_024),
+        Some(b'm') | Some(b'M') => (&s[..s.len() - 1], 1_024 * 1_024),
+        Some(b'g') | Some(b'G') => (&s[..s.len() - 1], 1_024 * 1_024 * 1_024),
+        _ => (s, 1),
+    };
+    let n: u64 = num_part
+        .parse()
+        .map_err(|e| format!("invalid size '{}': {}", s, e))?;
+    n.checked_mul(mult)
+        .ok_or_else(|| format!("size '{}' overflows u64", s))
+}
+
+/// Parse a TOS value from a string.  Accepts:
+/// - Decimal: "16"
+/// - Hex with 0x prefix: "0x10"
+/// - Octal with 0 prefix: "020"
+pub fn parse_tos(s: &str) -> Result<u8, String> {
+    let val: u32 = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|e| format!("invalid TOS hex '{}': {}", s, e))?
+    } else if s.starts_with('0') && s.len() > 1 {
+        u32::from_str_radix(&s[1..], 8).map_err(|e| format!("invalid TOS octal '{}': {}", s, e))?
+    } else {
+        s.parse::<u32>().map_err(|e| format!("invalid TOS '{}': {}", s, e))?
+    };
+    if val > 255 {
+        return Err(format!("TOS value {} out of range (0-255)", val));
+    }
+    Ok(val as u8)
+}
+
 pub fn parse(s: &str) -> Result<u64, String> {
     if s.is_empty() {
         return Ok(0);

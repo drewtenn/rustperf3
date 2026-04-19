@@ -114,6 +114,48 @@ pub struct Cli {
     /// Prefix each output line with a timestamp (currently a no-op stub).
     #[arg(long = "timestamps")]
     pub timestamps: bool,
+
+    /// Socket send/receive buffer size (SO_SNDBUF / SO_RCVBUF). Accepts K/M/G suffix.
+    /// Parsed; socket-option application is a Linux follow-up.
+    #[arg(short = 'w', long = "window")]
+    pub window: Option<String>,
+
+    /// TCP maximum segment size in bytes (TCP_MAXSEG). Linux-only; silently ignored elsewhere.
+    /// Parsed stub — setsockopt application is a Linux follow-up.
+    #[arg(short = 'M', long = "set-mss")]
+    pub mss: Option<u32>,
+
+    /// TCP congestion control algorithm name (e.g. cubic, bbr). Linux-only.
+    /// Parsed stub — application is a Linux follow-up.
+    #[arg(short = 'C', long = "congestion")]
+    pub congestion: Option<String>,
+
+    /// IP type-of-service byte (IP_TOS). Accepts decimal, 0x-hex, or 0-octal.
+    /// Parsed stub — setsockopt application is a Linux follow-up.
+    #[arg(short = 'S', long = "tos")]
+    pub tos: Option<String>,
+
+    /// Use zero-copy (sendfile). Parsed stub — not yet implemented.
+    #[arg(short = 'Z', long = "zerocopy")]
+    pub zerocopy: bool,
+
+    /// Terminate after sending/receiving this many bytes. Accepts K/M/G suffix.
+    /// Parsed stub — termination logic is a follow-up.
+    #[arg(short = 'n', long = "bytes")]
+    pub bytes: Option<String>,
+
+    /// Terminate after this many blocks (writes). Parsed stub — follow-up.
+    #[arg(short = 'k', long = "blockcount")]
+    pub blockcount: Option<u64>,
+
+    /// Prefix every output line with this title string (e.g. "run-1").
+    #[arg(short = 'T', long = "title")]
+    pub title: Option<String>,
+
+    /// CPU affinity specification (e.g. "0,1" or "0-3"). Linux-only.
+    /// Parsed stub — application is a Linux follow-up.
+    #[arg(short = 'A', long = "affinity")]
+    pub affinity: Option<String>,
 }
 
 /// Result of a successful parse: either client or server mode, each
@@ -149,6 +191,30 @@ impl Cli {
             Direction::Forward
         };
 
+        // Parse window size (-w): binary K/M/G multipliers, stored as u32 bytes.
+        let window_size = match self.window.as_deref() {
+            Some(s) => {
+                let v = bandwidth::parse_size(s)?;
+                if v > u32::MAX as u64 {
+                    return Err(format!("window size '{}' exceeds u32::MAX", s));
+                }
+                Some(v as u32)
+            }
+            None => None,
+        };
+
+        // Parse TOS (-S): decimal, 0x-hex, or 0-octal.
+        let tos = match self.tos.as_deref() {
+            Some(s) => Some(bandwidth::parse_tos(s)?),
+            None => None,
+        };
+
+        // Parse byte count (-n): binary K/M/G multipliers.
+        let total_bytes = match self.bytes.as_deref() {
+            Some(s) => Some(bandwidth::parse_size(s)?),
+            None => None,
+        };
+
         let base = Config {
             host: self.host.clone().unwrap_or_else(|| DEFAULT_BIND.to_string()),
             port: self.port,
@@ -164,6 +230,15 @@ impl Cli {
             json: self.json,
             format_unit: self.format,
             logfile: self.logfile,
+            window_size,
+            mss: self.mss,
+            congestion: self.congestion,
+            tos,
+            zero_copy: self.zerocopy,
+            total_bytes,
+            total_blocks: self.blockcount,
+            title: self.title.clone(),
+            affinity: self.affinity,
         };
         Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
     }

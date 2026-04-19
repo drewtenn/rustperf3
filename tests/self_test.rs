@@ -39,6 +39,15 @@ fn self_test_loopback_tcp_short_run() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
 
     // Tiny delay so the server thread reaches listener.accept() before
@@ -85,6 +94,15 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -163,6 +181,15 @@ fn self_test_loopback_udp_short_run() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -227,6 +254,15 @@ fn self_test_loopback_tcp_reverse() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -258,6 +294,15 @@ fn self_test_loopback_udp_reverse() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -290,6 +335,15 @@ fn self_test_loopback_tcp_bidir() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);
@@ -318,6 +372,15 @@ fn self_test_concurrent_three_clients() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
 
     let server = thread::spawn(move || {
@@ -347,6 +410,15 @@ fn self_test_concurrent_three_clients() {
                 json: false,
                 format_unit: None,
                 logfile: None,
+                window_size: None,
+                mss: None,
+                congestion: None,
+                tos: None,
+                zero_copy: false,
+                total_bytes: None,
+                total_blocks: None,
+                title: None,
+                affinity: None,
             };
             rperf3::run_client(cfg);
         }));
@@ -381,6 +453,15 @@ fn self_test_loopback_udp_bidir() {
         json: false,
         format_unit: None,
         logfile: None,
+        window_size: None,
+        mss: None,
+        congestion: None,
+        tos: None,
+        zero_copy: false,
+        total_bytes: None,
+        total_blocks: None,
+        title: None,
+        affinity: None,
     };
     thread::sleep(Duration::from_millis(50));
     rperf3::run_client(cfg);

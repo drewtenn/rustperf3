@@ -55,6 +55,24 @@ pub struct ClientOptions {
     pub reverse: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bidirectional: bool,
+    /// SO_SNDBUF / SO_RCVBUF size in bytes (-w). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_size: Option<u32>,
+    /// TCP_MAXSEG override (-M). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mss: Option<u32>,
+    /// TCP congestion algorithm name (-C). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congestion: Option<String>,
+    /// IP_TOS value (-S). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tos: Option<u8>,
+    /// Terminate after this many bytes (-n). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    /// Terminate after this many blocks (-k). Only sent when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_blocks: Option<u64>,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -74,6 +92,12 @@ impl ClientOptions {
             bandwidth: 0,
             reverse: false,
             bidirectional: false,
+            window_size: None,
+            mss: None,
+            congestion: None,
+            tos: None,
+            total_bytes: None,
+            total_blocks: None,
         }
     }
 }
