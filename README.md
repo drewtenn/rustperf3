@@ -57,11 +57,22 @@ client can talk to `rPerf3` server, the MVP is working.
 - **Title prefix (`-T / --title <LABEL>`).** Fully implemented. Every
   interval row and summary row is prefixed with `LABEL:  ` so you can
   distinguish runs when piping output from multiple simultaneous tests.
-- **Phase-5 knob flags (parsed stubs):** `-w` (window/buffer size), `-M`
-  (MSS), `-C` (congestion algorithm), `-S` (TOS byte), `-Z` (zero-copy),
-  `-n` (byte limit), `-k` (block limit), `-A` (CPU affinity). All 9 flags
-  parse and store correctly; socket-option application and termination
-  conditions are a Linux follow-up. See roadmap.
+- **Socket-option knobs (`-w`, `-M`, `-C`, `-S`).** Fully wired: window
+  size sets `SO_SNDBUF`/`SO_RCVBUF`; TOS sets `IP_TOS` (all platforms);
+  MSS sets `TCP_MAXSEG` and congestion sets `TCP_CONGESTION` (Linux-only
+  with a runtime warning on other platforms). Applied on both the client
+  data streams and the server side after negotiation.
+- **Byte / block termination (`-n`, `-k`).** Send loops (TCP and UDP,
+  client and reverse-server) now break when the requested byte count or
+  block count is reached, whichever comes first.
+- **CPU affinity (`-A`).** Pins the main thread to the given CPU index
+  (e.g. `0`) via `sched_setaffinity` on Linux; emits a warning and
+  continues on other platforms. Single-integer form only — range/list
+  syntax is a follow-up.
+- **Phase-5 wire propagation.** All negotiated knobs (`-w`, `-M`, `-C`,
+  `-S`, `-n`, `-k`) are now included in the `ClientOptions` JSON sent
+  during ParamExchange, so the server honors them even when both sides
+  are rPerf3. `-Z` (zero-copy) remains a documented stub.
 
 ### Accuracy features
 
@@ -117,17 +128,16 @@ Options:
   -V, --verbose              Verbose output (no-op stub — accepted for iperf3 compat)
       --timestamps           Prefix lines with timestamps (no-op stub — accepted for iperf3 compat)
 
-Phase-5 knobs (all parsed; see roadmap for implementation status):
-  -T, --title <LABEL>        Prefix every output line with LABEL (FULLY IMPLEMENTED)
-  -w, --window <SIZE>        Socket buffer size, e.g. 256K (parsed stub — Linux follow-up)
-  -M, --set-mss <BYTES>      TCP maximum segment size (parsed stub — Linux follow-up)
-  -C, --congestion <ALG>     TCP congestion algorithm, e.g. bbr (parsed stub — Linux follow-up)
-  -S, --tos <VALUE>          IP type-of-service byte: decimal, 0x-hex, or 0-octal
-                             (parsed stub — Linux follow-up)
-  -Z, --zerocopy             Zero-copy mode (parsed stub — not yet implemented)
-  -n, --bytes <SIZE>         Stop after sending/receiving this many bytes (parsed stub)
-  -k, --blockcount <COUNT>   Stop after this many writes/blocks (parsed stub)
-  -A, --affinity <SPEC>      CPU affinity, e.g. 0,1 or 0-3 (parsed stub — Linux follow-up)
+Knob flags:
+  -T, --title <LABEL>        Prefix every output line with LABEL (fully implemented)
+  -w, --window <SIZE>        Socket send/receive buffer size, e.g. 256K (applied via setsockopt)
+  -M, --set-mss <BYTES>      TCP maximum segment size (Linux-only; warning on other platforms)
+  -C, --congestion <ALG>     TCP congestion algorithm, e.g. bbr (Linux-only; warning elsewhere)
+  -S, --tos <VALUE>          IP type-of-service byte: decimal, 0x-hex, or 0-octal (applied)
+  -Z, --zerocopy             Zero-copy mode (stub — sendfile not yet implemented)
+  -n, --bytes <SIZE>         Stop after sending/receiving this many bytes (applied)
+  -k, --blockcount <COUNT>   Stop after this many writes/blocks (applied)
+  -A, --affinity <SPEC>      Pin main thread to CPU index (Linux-only; single integer form)
 
   -h, --help                 Print help
 ```
@@ -215,11 +225,12 @@ src/
   server.rs            server state machine
   common/
     mod.rs             Message enum + connect()
+    affinity.rs        CPU affinity via sched_setaffinity (-A, Linux-only)
     cookie.rs          session cookie generation and wire reading
     cpu.rs             /proc/self/stat CPU sampling (Linux)
     interval.rs        per-second rolling interval reporter
     json_output.rs     iperf3-compatible JSON output structs + render()
-    protocol.rs        Socket trait, TCP/UDP wrappers, test MockSocket
+    protocol.rs        Socket trait + TuningOpts, TCP/UDP wrappers, test MockSocket
     stream.rs          data-stream worker thread
     test.rs            Test + Config + per-stream receipts
     timer.rs           std::time::Instant wrapper
@@ -257,19 +268,19 @@ tests/
 | Server JSON | Not started | `-J` affects client only; server always prints text. |
 | **Phase 5 — knob parity** | **Partially shipped** | See below. |
 
-### Phase 5 detail
+### Phase 5 / follow-up 1 detail
 
 | Flag | Status |
 |------|--------|
 | `-T` / `--title` | **Fully implemented.** `OnceLock<String>` in `stream.rs`; every interval and summary row is prefixed. |
-| `-w` / `--window` | Parsed + stored in `Config`. `parse_size()` helper in `bandwidth.rs`. Socket `SO_SNDBUF`/`SO_RCVBUF` application is a Linux follow-up. |
-| `-n` / `--bytes` | Parsed + stored. Termination-after-N-bytes logic is a follow-up. |
-| `-k` / `--blockcount` | Parsed + stored. Termination-after-N-blocks logic is a follow-up. |
-| `-M` / `--set-mss` | Parsed + stored. `TCP_MAXSEG setsockopt` is Linux-only; follow-up. |
-| `-C` / `--congestion` | Parsed + stored. `TCP_CONGESTION setsockopt` is Linux-only; follow-up. |
-| `-S` / `--tos` | Parsed (decimal / 0x-hex / 0-octal) + stored. `IP_TOS setsockopt` is a follow-up. |
-| `-Z` / `--zerocopy` | Parsed + stored (`zero_copy: bool`). `sendfile`-based impl is a follow-up. |
-| `-A` / `--affinity` | Parsed + stored. `sched_setaffinity` is Linux-only; follow-up. |
+| `-w` / `--window` | **Applied.** Sets `SO_SNDBUF`/`SO_RCVBUF` on data sockets via `setsockopt` on both client and server. |
+| `-n` / `--bytes` | **Applied.** TCP and UDP send loops break when `bytes_sent >= total_bytes`. Propagated in `ClientOptions`. |
+| `-k` / `--blockcount` | **Applied.** Send loops break when `bytes_sent / block_size >= total_blocks`. Propagated in `ClientOptions`. |
+| `-M` / `--set-mss` | **Applied (Linux).** Sets `TCP_MAXSEG` via `setsockopt`; logs a warning and skips on non-Linux. |
+| `-C` / `--congestion` | **Applied (Linux).** Sets `TCP_CONGESTION` via `setsockopt`; logs a warning and skips on non-Linux. |
+| `-S` / `--tos` | **Applied.** Sets `IP_TOS` via `setsockopt` on data sockets (all platforms). |
+| `-A` / `--affinity` | **Applied (Linux).** Pins main thread to the given CPU index via `sched_setaffinity`; logs a warning on non-Linux. Single-integer only — range/list syntax is a future follow-up. |
+| `-Z` / `--zerocopy` | **Stub.** Parsed and stored; `sendfile`-based implementation is a future follow-up. |
 
 ## Authentication (Phase 6)
 
