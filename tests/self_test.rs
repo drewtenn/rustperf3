@@ -33,6 +33,8 @@ fn self_test_loopback_tcp_short_run() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Forward,
     };
 
@@ -74,6 +76,8 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         omit: 1,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Forward,
     };
 
@@ -147,6 +151,8 @@ fn self_test_loopback_udp_short_run() {
         omit: 0,
         transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Forward,
     };
 
@@ -206,6 +212,8 @@ fn self_test_loopback_tcp_reverse() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Reverse,
     };
     thread::sleep(Duration::from_millis(50));
@@ -232,6 +240,8 @@ fn self_test_loopback_udp_reverse() {
         omit: 0,
         transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Reverse,
     };
     thread::sleep(Duration::from_millis(50));
@@ -259,6 +269,8 @@ fn self_test_loopback_tcp_bidir() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Bidirectional,
     };
     thread::sleep(Duration::from_millis(50));
@@ -280,6 +292,8 @@ fn self_test_loopback_udp_bidir() {
         omit: 0,
         transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Bidirectional,
     };
     thread::sleep(Duration::from_millis(50));

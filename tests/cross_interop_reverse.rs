@@ -40,6 +40,8 @@ fn rperf3_client_reverse_against_iperf3_server() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        one_off: false,
+        max_concurrent: 1,
         direction: rperf3::Direction::Reverse,
     };
     rperf3::run_client(cfg);

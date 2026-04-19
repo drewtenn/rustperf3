@@ -97,6 +97,12 @@ pub struct Config {
 	/// Applies to UDP by default (matching iperf3) and to TCP when
 	/// explicitly set via `-b`.
 	pub bandwidth: u64,
+	/// iperf3-compat: server exits after one test (default: loop forever).
+	pub one_off: bool,
+	/// Max simultaneous sessions the server will accept. `1` matches
+	/// iperf3's default (one at a time, reject others with AccessDenied);
+	/// `N > 1` is an rperf3 extension.
+	pub max_concurrent: u32,
 	pub direction: Direction,
 }
 
@@ -113,6 +119,8 @@ impl Config {
 			omit: 0,
 			transport: TransportKind::Tcp,
 			bandwidth: 0,
+			one_off: false,
+			max_concurrent: 1,
 			direction: Direction::Forward,
 		}
 	}
@@ -207,6 +215,8 @@ mod tests {
 			omit: 0,
 			transport: TransportKind::Tcp,
 			bandwidth: 0,
+			one_off: false,
+			max_concurrent: 1,
 			direction: Direction::Forward,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
@@ -242,5 +252,12 @@ mod tests {
 		assert_eq!(r.lost, 0);
 		assert_eq!(r.ooo, 0);
 		assert_eq!(r.packets, 0);
+	}
+
+	#[test]
+	fn config_with_host_defaults_multi_test_server() {
+		let cfg = Config::with_host("h");
+		assert!(!cfg.one_off);
+		assert_eq!(cfg.max_concurrent, 1);
 	}
 }

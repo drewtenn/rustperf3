@@ -77,6 +77,15 @@ pub struct Cli {
     #[arg(short = 'b', long = "bandwidth")]
     pub bandwidth: Option<String>,
 
+    /// Exit after one test (default is to loop forever, matching iperf3).
+    #[arg(short = '1', long = "one-off")]
+    pub one_off: bool,
+
+    /// Maximum concurrent sessions. Default 1 (matches iperf3). rperf3
+    /// extension: N > 1 allows N simultaneous tests via cookie demux.
+    #[arg(long = "max-concurrent", default_value_t = 1)]
+    pub max_concurrent: u32,
+
     /// Reverse the direction of the test. Server sends, client receives.
     #[arg(short = 'R', long = "reverse", conflicts_with = "bidir")]
     pub reverse: bool,
@@ -128,6 +137,8 @@ impl Cli {
             omit: self.omit,
             transport,
             bandwidth,
+            one_off: self.one_off,
+            max_concurrent: self.max_concurrent.max(1),
             direction,
         };
         Ok(if self.server { Mode::Server(base) } else { Mode::Client(base) })
@@ -311,6 +322,32 @@ mod tests {
         match cli.into_mode() {
             Mode::Client(cfg) => assert_eq!(cfg.direction, crate::common::Direction::Forward),
             _ => panic!("expected client"),
+        }
+    }
+
+    #[test]
+    fn one_off_defaults_false() {
+        let cli = Cli::try_parse_from(["rperf3", "-s"]).unwrap();
+        assert!(!cli.one_off);
+        match cli.into_mode() {
+            Mode::Server(cfg) => assert!(!cfg.one_off),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn parses_one_off_short() {
+        let cli = Cli::try_parse_from(["rperf3", "-s", "-1"]).unwrap();
+        assert!(cli.one_off);
+    }
+
+    #[test]
+    fn parses_max_concurrent() {
+        let cli = Cli::try_parse_from(["rperf3", "-s", "--max-concurrent", "4"]).unwrap();
+        assert_eq!(cli.max_concurrent, 4);
+        match cli.into_mode() {
+            Mode::Server(cfg) => assert_eq!(cfg.max_concurrent, 4),
+            _ => panic!(),
         }
     }
 }
