@@ -7,6 +7,7 @@ use super::protocol::Protocol;
 use super::stream::Stream;
 use super::wire::DEFAULT_TCP_LEN;
 use super::Message;
+use crate::common::Direction;
 use crate::common::TransportKind;
 
 /// Per-stream bookkeeping the client's stream thread sends back to the
@@ -96,6 +97,7 @@ pub struct Config {
 	/// Applies to UDP by default (matching iperf3) and to TCP when
 	/// explicitly set via `-b`.
 	pub bandwidth: u64,
+	pub direction: Direction,
 }
 
 impl Config {
@@ -111,6 +113,7 @@ impl Config {
 			omit: 0,
 			transport: TransportKind::Tcp,
 			bandwidth: 0,
+			direction: Direction::Forward,
 		}
 	}
 
@@ -204,6 +207,7 @@ mod tests {
 			omit: 0,
 			transport: TransportKind::Tcp,
 			bandwidth: 0,
+			direction: Direction::Forward,
 		};
 		assert_eq!(cfg.host_port(), "10.1.10.3:5202");
 	}
@@ -223,6 +227,12 @@ mod tests {
 		assert!(!t.is_started);
 		assert!(!t.is_running);
 		assert!(t.control_channel.is_none());
+	}
+
+	#[test]
+	fn config_with_host_defaults_forward() {
+		let cfg = Config::with_host("h");
+		assert_eq!(cfg.direction, crate::common::Direction::Forward);
 	}
 
 	#[test]

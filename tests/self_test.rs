@@ -33,6 +33,7 @@ fn self_test_loopback_tcp_short_run() {
         omit: 0,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        direction: rperf3::Direction::Forward,
     };
 
     // Tiny delay so the server thread reaches listener.accept() before
@@ -73,6 +74,7 @@ fn self_test_omit_separates_omit_window_from_measurement_window() {
         omit: 1,
         transport: rperf3::TransportKind::Tcp,
         bandwidth: 0,
+        direction: rperf3::Direction::Forward,
     };
 
     thread::sleep(Duration::from_millis(50));
@@ -145,6 +147,7 @@ fn self_test_loopback_udp_short_run() {
         omit: 0,
         transport: rperf3::TransportKind::Udp,
         bandwidth: 10_000_000,
+        direction: rperf3::Direction::Forward,
     };
 
     thread::sleep(Duration::from_millis(50));
