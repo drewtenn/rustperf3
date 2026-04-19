@@ -124,6 +124,11 @@ compatibility work tracked in sub-project #1.
 
 ## Sub-project 3 — Concurrent tests on server
 
+**Status:** ✅ Shipped (2026-04-18). Server loops by default, `-1`
+preserves iperf3's one-shot behavior, `--max-concurrent N` enables
+cookie-multiplexed concurrent TCP sessions. UDP concurrent sessions
+return AccessDenied as a known limitation.
+
 **CLI additions:** `-1` (iperf3-compat: server exits after one test); `--max-concurrent N` (rPerf3 extension; default unlimited).
 
 **Approach:** sessions share the single listen port. Data streams demultiplex by cookie (already supported by `cookie.rs`). Remove the "one test at a time" guard in `server.rs`.
